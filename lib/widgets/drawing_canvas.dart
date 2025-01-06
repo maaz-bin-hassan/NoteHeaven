@@ -11,7 +11,6 @@ class DrawingCanvas extends StatefulWidget {
   final Color selectedColor;
   final double strokeWidth;
   final Function(List<DrawingPoint>) onDrawingComplete;
-  final double height;
   final Color backgroundColor;
 
   const DrawingCanvas({
@@ -19,7 +18,6 @@ class DrawingCanvas extends StatefulWidget {
     required this.selectedColor,
     this.strokeWidth = 3,
     required this.onDrawingComplete,
-    this.height = 300,
     this.backgroundColor = Colors.white,
   });
 
@@ -29,17 +27,14 @@ class DrawingCanvas extends StatefulWidget {
 
 class _DrawingCanvasState extends State<DrawingCanvas> {
   List<DrawingPoint> points = [];
+  late Size _canvasSize;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: widget.backgroundColor,
-        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
-      ),
-      child: ClipRRect(
-        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
-        child: GestureDetector(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
+        return GestureDetector(
           onPanStart: (details) {
             setState(() {
               points.add(
@@ -73,10 +68,10 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
           },
           child: CustomPaint(
             painter: _DrawingPainter(points: points),
-            size: Size(MediaQuery.of(context).size.width, widget.height),
+            size: _canvasSize,
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

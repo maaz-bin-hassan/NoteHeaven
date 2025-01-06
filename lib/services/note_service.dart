@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import '../models/note.dart';
 
@@ -13,67 +14,104 @@ class NoteService {
   final List<Note> _notes = [];
   final _notesStreamController = StreamController<List<Note>>.broadcast();
   late SharedPreferences _prefs;
+  bool _isInitialized = false;
 
-  // Initialize shared preferences
   Future<void> init() async {
-    _prefs = await SharedPreferences.getInstance();
-    await _loadNotes();
+    if (_isInitialized) return;
+
+    try {
+      _prefs = await SharedPreferences.getInstance();
+      await _loadNotes();
+      _isInitialized = true;
+      debugPrint('NoteService initialized successfully');
+    } catch (e) {
+      debugPrint('Error initializing NoteService: $e');
+    }
   }
 
   Stream<List<Note>> get notesStream => _notesStreamController.stream;
 
-  // Load notes from local storage
   Future<void> _loadNotes() async {
-    final String? notesJson = _prefs.getString(_storageKey);
-    if (notesJson != null) {
-      final List<dynamic> decoded = jsonDecode(notesJson);
-      _notes.clear();
-      _notes.addAll(
-        decoded.map((noteJson) => Note.fromJson(noteJson)).toList(),
-      );
-      _notesStreamController.add(_notes);
+    try {
+      final String? notesJson = _prefs.getString(_storageKey);
+      debugPrint('Loading notes from storage: $notesJson');
+
+      if (notesJson != null) {
+        final List<dynamic> decoded = jsonDecode(notesJson);
+        _notes.clear();
+        _notes.addAll(
+          decoded.map((noteJson) => Note.fromJson(noteJson)).toList(),
+        );
+        _notesStreamController.add(_notes);
+        debugPrint('Loaded ${_notes.length} notes');
+      }
+    } catch (e) {
+      debugPrint('Error loading notes: $e');
     }
   }
 
-  // Save notes to local storage
   Future<void> _saveNotes() async {
-    final String notesJson =
-        jsonEncode(_notes.map((note) => note.toJson()).toList());
-    await _prefs.setString(_storageKey, notesJson);
-  }
+    try {
+      final String notesJson =
+          jsonEncode(_notes.map((note) => note.toJson()).toList());
+      await _prefs.setString(_storageKey, notesJson);
+      debugPrint('Saved ${_notes.length} notes to storage');
 
-  void addNote(
-      String title, String content, String color, List<String> images) {
-    final note = Note(
-      id: const Uuid().v4(),
-      title: title,
-      content: content,
-      createdAt: DateTime.now(),
-      modifiedAt: DateTime.now(),
-      images: images,
-      color: color,
-    );
-    _notes.add(note);
-    _notesStreamController.add(_notes);
-    _saveNotes();
-  }
-
-  void updateNote(Note note) {
-    final index = _notes.indexWhere((n) => n.id == note.id);
-    if (index != -1) {
-      _notes[index] = note;
-      _notesStreamController.add(_notes);
-      _saveNotes();
+      // Verify save
+      final saved = _prefs.getString(_storageKey);
+      debugPrint('Verification - Notes in storage: $saved');
+    } catch (e) {
+      debugPrint('Error saving notes: $e');
+      rethrow;
     }
   }
 
-  void deleteNote(String id) {
-    _notes.removeWhere((note) => note.id == id);
-    _notesStreamController.add(_notes);
-    _saveNotes();
+  Future<void> addNote(Note note) async {
+    try {
+      _notes.add(note);
+      _notesStreamController.add(_notes);
+      await _saveNotes();
+      debugPrint('Added note: ${note.title}');
+    } catch (e) {
+      debugPrint('Error adding note: $e');
+      rethrow;
+    }
   }
 
-  void dispose() {
-    _notesStreamController.close();
+  Future<void> updateNote(Note note) async {
+    try {
+      final index = _notes.indexWhere((n) => n.id == note.id);
+      if (index != -1) {
+        _notes[index] = note;
+        _notesStreamController.add(_notes);
+        await _saveNotes();
+        debugPrint('Updated note: ${note.title}');
+      }
+    } catch (e) {
+      debugPrint('Error updating note: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> deleteNote(String id) async {
+    try {
+      _notes.removeWhere((note) => note.id == id);
+      _notesStreamController.add(_notes);
+      await _saveNotes();
+      debugPrint('Deleted note with id: $id');
+    } catch (e) {
+      debugPrint('Error deleting note: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> dispose() async {
+    try {
+      await _saveNotes();
+      _notesStreamController.close();
+      debugPrint('NoteService disposed');
+    } catch (e) {
+      debugPrint('Error disposing NoteService: $e');
+    }
   }
 }

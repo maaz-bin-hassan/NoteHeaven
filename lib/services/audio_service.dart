@@ -12,6 +12,9 @@ class AudioService {
   bool _isPlaying = false;
   String? _currentlyPlayingPath;
 
+  // Add getter for the audio player
+  AudioPlayer get player => _audioPlayer;
+
   Future<bool> checkPermission() async {
     final micStatus = await Permission.microphone.request();
     final storageStatus = await Permission.storage.request();

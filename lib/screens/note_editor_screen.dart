@@ -3,10 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:uuid/uuid.dart';
 import '../models/note.dart';
 import '../services/note_service.dart';
 import '../widgets/drawing_canvas.dart';
 import '../services/audio_service.dart';
+import 'drawing_screen.dart';
+import '../widgets/audio_player_widget.dart';
 
 class NoteEditorScreen extends StatefulWidget {
   final Note? note;
@@ -25,13 +28,16 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   final _noteService = NoteService();
   late AnimationController _colorPickerController;
   bool _isEdited = false;
-  Color _drawingColor = Colors.black;
-  double _strokeWidth = 3.0;
   List<DrawingPoint> _drawings = [];
-  bool _isDrawingMode = false;
+  bool _showDrawingCanvas = false;
   final AudioService _audioService = AudioService();
   final List<String> _audioRecordings = [];
   bool _isRecording = false;
+
+  // Add new properties for text colors
+  Color _titleColor = Colors.black;
+  Color _contentColor = Colors.black;
+  bool _isDrawingVisible = false; // Add this property
 
   @override
   void initState() {
@@ -197,45 +203,37 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     );
   }
 
-  void _saveNote() {
+  Future<void> _saveNote() async {
     if (_titleController.text.isEmpty) {
       _showError('Please add a title');
       return;
     }
 
     try {
+      final note = Note(
+        id: widget.note?.id ?? const Uuid().v4(),
+        title: _titleController.text,
+        content: _contentController.text,
+        createdAt: widget.note?.createdAt ?? DateTime.now(),
+        modifiedAt: DateTime.now(),
+        images: _images,
+        color: _selectedColor,
+        titleColor: _titleColor,
+        contentColor: _contentColor,
+        audioRecordings: _audioRecordings,
+      );
+
       if (widget.note == null) {
-        _noteService.addNote(
-          _titleController.text,
-          _contentController.text,
-          _selectedColor,
-          _images,
-        );
+        await _noteService.addNote(note);
+        debugPrint('New note created: ${note.title}');
       } else {
-        _noteService.updateNote(
-          Note(
-            id: widget.note!.id,
-            title: _titleController.text,
-            content: _contentController.text,
-            createdAt: widget.note!.createdAt,
-            modifiedAt: DateTime.now(),
-            images: _images,
-            color: _selectedColor,
-          ),
-        );
+        await _noteService.updateNote(note);
+        debugPrint('Note updated: ${note.title}');
       }
       Navigator.pop(context);
     } catch (e) {
+      debugPrint('Error saving note: $e');
       _showError('Failed to save note');
-    }
-  }
-
-  void _toggleDrawingMode() {
-    setState(() {
-      _isDrawingMode = !_isDrawingMode;
-    });
-    if (!_isDrawingMode) {
-      _isEdited = true;
     }
   }
 
@@ -261,119 +259,27 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     }
   }
 
-  Widget _buildColorPicker() {
-    return SizedBox(
-      width: MediaQuery.of(context).size.width * 0.5,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Colors.black,
-            Colors.red,
-            Colors.blue,
-            Colors.green,
-            Colors.yellow,
-            Colors.purple,
-          ]
-              .map((color) => Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: GestureDetector(
-                      onTap: () => setState(() => _drawingColor = color),
-                      child: Container(
-                        width: 32,
-                        height: 32,
-                        decoration: BoxDecoration(
-                          color: color,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: _drawingColor == color
-                                ? Colors.white
-                                : Colors.transparent,
-                            width: 2,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ))
-              .toList(),
+  void _openDrawingScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DrawingScreen(
+          initialDrawings: _drawings,
+          onDrawingComplete: (drawings) {
+            setState(() {
+              _drawings = drawings;
+              _isEdited = true;
+            });
+          },
         ),
       ),
     );
   }
 
-  Widget _buildStrokeWidthSlider() {
-    return SizedBox(
-      width: MediaQuery.of(context).size.width * 0.3,
-      child: Slider(
-        value: _strokeWidth,
-        min: 1,
-        max: 10,
-        onChanged: (value) => setState(() => _strokeWidth = value),
-      ),
-    );
-  }
-
-  Widget _buildDrawingTools() {
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8.0),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius:
-                  const BorderRadius.vertical(top: Radius.circular(12)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 4,
-                  offset: const Offset(0, 1),
-                ),
-              ],
-            ),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      'Drawing Tools',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    _buildColorPicker(),
-                    _buildStrokeWidthSlider(),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          DrawingCanvas(
-            selectedColor: _drawingColor,
-            strokeWidth: _strokeWidth,
-            height: MediaQuery.of(context).size.height * 0.4,
-            backgroundColor: Colors.white,
-            onDrawingComplete: (points) {
-              _drawings = points;
-              setState(() => _isEdited = true);
-            },
-          ),
-        ],
-      ),
-    );
+  void _toggleDrawingVisibility() {
+    setState(() {
+      _isDrawingVisible = !_isDrawingVisible;
+    });
   }
 
   Widget _buildAudioRecordings() {
@@ -392,33 +298,15 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
             physics: const NeverScrollableScrollPhysics(),
             itemCount: _audioRecordings.length,
             itemBuilder: (context, index) {
-              return Card(
-                child: ListTile(
-                  leading: IconButton(
-                    icon: Icon(
-                      _audioService.isPlaying ? Icons.stop : Icons.play_arrow,
-                    ),
-                    onPressed: () async {
-                      if (_audioService.isPlaying) {
-                        await _audioService.stopPlaying();
-                      } else {
-                        await _audioService
-                            .playRecording(_audioRecordings[index]);
-                      }
-                      setState(() {});
-                    },
-                  ),
-                  title: Text('Recording ${index + 1}'),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete),
-                    onPressed: () {
-                      setState(() {
-                        _audioRecordings.removeAt(index);
-                        _isEdited = true;
-                      });
-                    },
-                  ),
-                ),
+              return AudioPlayerWidget(
+                audioPath: _audioRecordings[index],
+                audioService: _audioService,
+                onDelete: () {
+                  setState(() {
+                    _audioRecordings.removeAt(index);
+                    _isEdited = true;
+                  });
+                },
               );
             },
           ),
@@ -443,6 +331,202 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     final backgroundColor = Color(backgroundColorInt);
     final backgroundBrightness = backgroundColor.computeLuminance();
     return backgroundBrightness > 0.5 ? Colors.black : Colors.white;
+  }
+
+  // Add color selection method
+  void _showTextColorPicker(bool isTitle) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              isTitle ? 'Choose Title Color' : 'Choose Text Color',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 20),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                Colors.black,
+                Colors.red,
+                Colors.blue,
+                Colors.green,
+                Colors.purple,
+                Colors.orange,
+                Colors.teal,
+                Colors.pink,
+                Colors.indigo,
+                Colors.amber,
+              ]
+                  .map((color) => GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            if (isTitle) {
+                              _titleColor = color;
+                            } else {
+                              _contentColor = color;
+                            }
+                            _isEdited = true;
+                          });
+                          Navigator.pop(context);
+                        },
+                        child: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: color,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: (isTitle ? _titleColor : _contentColor) ==
+                                      color
+                                  ? Colors.white
+                                  : Colors.transparent,
+                              width: 2,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ))
+                  .toList(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMainContent(Color textColor) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _titleController,
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: _titleColor,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'Title',
+                  border: InputBorder.none,
+                  hintStyle: TextStyle(
+                    color: textColor.withOpacity(0.6),
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.format_color_text),
+              onPressed: () => _showTextColorPicker(true),
+              tooltip: 'Change title color',
+            ),
+          ],
+        ),
+        if (_images.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 100,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _images.length,
+              itemBuilder: (context, index) => _buildImageItem(index),
+            ),
+          ),
+        ],
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _contentController,
+                maxLines: null,
+                style: TextStyle(
+                  fontSize: 16,
+                  color: _contentColor,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'Start writing...',
+                  border: InputBorder.none,
+                  hintStyle: TextStyle(
+                    color: textColor.withOpacity(0.6),
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.format_color_text),
+              onPressed: () => _showTextColorPicker(false),
+              tooltip: 'Change text color',
+            ),
+          ],
+        ),
+        if (_drawings.isNotEmpty) ...[
+          Row(
+            children: [
+              Text(
+                'Drawing attached',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: textColor.withOpacity(0.7),
+                    ),
+              ),
+              IconButton(
+                icon: Icon(
+                  _isDrawingVisible ? Icons.visibility_off : Icons.visibility,
+                  color: textColor.withOpacity(0.7),
+                ),
+                onPressed: _toggleDrawingVisibility,
+                tooltip: _isDrawingVisible ? 'Hide drawing' : 'Show drawing',
+              ),
+              IconButton(
+                icon: const Icon(Icons.edit),
+                onPressed: _openDrawingScreen,
+                tooltip: 'Edit drawing',
+                color: textColor.withOpacity(0.7),
+              ),
+            ],
+          ),
+          if (_isDrawingVisible) ...[
+            const SizedBox(height: 8),
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: CustomPaint(
+                painter: DrawingDisplayPainter(points: _drawings),
+                size: const Size(double.infinity, 200),
+              ),
+            ),
+          ],
+        ],
+        if (_audioRecordings.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Container(
+            margin: const EdgeInsets.only(bottom: 16),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).cardColor,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: _buildAudioRecordings(),
+          ),
+        ],
+      ],
+    );
   }
 
   @override
@@ -509,111 +593,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
           ),
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                TextField(
-                  controller: _titleController,
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: textColor,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Title',
-                    border: InputBorder.none,
-                    hintStyle: TextStyle(
-                      color: textColor.withOpacity(0.6),
-                    ),
-                  ),
-                ),
-                if (_images.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    height: 100,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: _images.length,
-                      itemBuilder: (context, index) {
-                        return Stack(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: Image.file(
-                                  File(_images[index]),
-                                  height: 100,
-                                  width: 100,
-                                  fit: BoxFit.cover,
-                                ),
-                              ),
-                            ),
-                            Positioned(
-                              right: 0,
-                              top: 0,
-                              child: IconButton(
-                                icon: const Icon(Icons.close, size: 20),
-                                onPressed: () {
-                                  setState(() {
-                                    _images.removeAt(index);
-                                    _isEdited = true;
-                                  });
-                                },
-                                style: IconButton.styleFrom(
-                                  backgroundColor: Colors.black54,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.all(4),
-                                ),
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                  ),
-                ],
-                if (!_isDrawingMode) ...[
-                  TextField(
-                    controller: _contentController,
-                    maxLines: null,
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: textColor,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Start writing...',
-                      border: InputBorder.none,
-                      hintStyle: TextStyle(
-                        color: textColor.withOpacity(0.6),
-                      ),
-                    ),
-                  ),
-                ] else ...[
-                  _buildDrawingTools(),
-                ],
-                if (_drawings.isNotEmpty && !_isDrawingMode)
-                  Container(
-                    margin: const EdgeInsets.only(top: 16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: CustomPaint(
-                      painter: DrawingDisplayPainter(points: _drawings),
-                      size: const Size(double.infinity, 200),
-                    ),
-                  ),
-                if (_audioRecordings.isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).cardColor,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: _buildAudioRecordings(),
-                  ),
-              ],
-            ),
+            child: _buildMainContent(textColor),
           ),
         ),
         bottomNavigationBar: BottomAppBar(
@@ -624,10 +604,9 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               IconButton(
-                icon: Icon(_isDrawingMode ? Icons.edit : Icons.draw),
-                onPressed: _toggleDrawingMode,
-                tooltip:
-                    _isDrawingMode ? 'Switch to text' : 'Switch to drawing',
+                icon: const Icon(Icons.draw),
+                onPressed: _openDrawingScreen,
+                tooltip: 'Open drawing canvas',
                 color: Theme.of(context).colorScheme.primary,
               ),
               IconButton(
@@ -642,6 +621,38 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildImageItem(int index) {
+    return Stack(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(right: 8),
+          width: 100,
+          height: 100,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            image: DecorationImage(
+              image: FileImage(File(_images[index])),
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
+        Positioned(
+          top: 4,
+          right: 12,
+          child: IconButton(
+            icon: const Icon(Icons.close, color: Colors.white),
+            onPressed: () {
+              setState(() {
+                _images.removeAt(index);
+                _isEdited = true;
+              });
+            },
+          ),
+        ),
+      ],
     );
   }
 

@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'screens/home_screen.dart';
 import 'services/note_service.dart';
 
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await NoteService().init();
-  runApp(const MyApp());
+  try {
+    WidgetsFlutterBinding.ensureInitialized();
+    final noteService = NoteService();
+    await noteService.init();
+    debugPrint('App initialized successfully');
+    runApp(const MyApp());
+  } catch (e) {
+    debugPrint('Error initializing app: $e');
+  }
 }
 
 class MyApp extends StatefulWidget {

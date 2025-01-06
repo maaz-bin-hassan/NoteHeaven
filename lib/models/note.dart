@@ -1,3 +1,5 @@
+import 'package:flutter/material.dart';
+
 class Note {
   final String id;
   String title;
@@ -7,6 +9,8 @@ class Note {
   List<String> images;
   String color;
   List<String> audioRecordings;
+  Color titleColor;
+  Color contentColor;
 
   Note({
     required this.id,
@@ -17,6 +21,8 @@ class Note {
     this.images = const [],
     this.color = '#FFFFFF',
     this.audioRecordings = const [],
+    this.titleColor = Colors.black,
+    this.contentColor = Colors.black,
   });
 
   // Convert Note to JSON
@@ -30,6 +36,8 @@ class Note {
       'images': images,
       'color': color,
       'audioRecordings': audioRecordings,
+      'titleColor': titleColor.value,
+      'contentColor': contentColor.value,
     };
   }
 
@@ -44,6 +52,8 @@ class Note {
       images: List<String>.from(json['images']),
       color: json['color'],
       audioRecordings: List<String>.from(json['audioRecordings'] ?? []),
+      titleColor: Color(json['titleColor'] ?? Colors.black.value),
+      contentColor: Color(json['contentColor'] ?? Colors.black.value),
     );
   }
 }
