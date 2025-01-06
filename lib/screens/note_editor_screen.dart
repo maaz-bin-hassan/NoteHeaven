@@ -427,29 +427,36 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     );
   }
 
-  Color _getTextColor(BuildContext context) {
-    if (Theme.of(context).brightness == Brightness.dark) {
-      // Get the perceived brightness of the background color
-      final backgroundColorInt =
-          int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000;
-      final backgroundColor = Color(backgroundColorInt);
-      final backgroundBrightness = backgroundColor.computeLuminance();
+  Color _getDarkerColor(Color baseColor) {
+    final HSLColor hsl = HSLColor.fromColor(baseColor);
+    return hsl.withLightness((hsl.lightness * 0.8).clamp(0.0, 1.0)).toColor();
+  }
 
-      // Return white for dark backgrounds, black for light backgrounds
-      return backgroundBrightness < 0.5 ? Colors.white : Colors.black;
+  Color _getTextColor(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    if (isDarkMode) {
+      return Colors.white;
     }
-    return Colors.black;
+
+    final backgroundColorInt =
+        int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000;
+    final backgroundColor = Color(backgroundColorInt);
+    final backgroundBrightness = backgroundColor.computeLuminance();
+    return backgroundBrightness > 0.5 ? Colors.black : Colors.white;
   }
 
   @override
   Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = Color(
+        int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000);
+    final backgroundColor = isDarkMode ? _getDarkerColor(baseColor) : baseColor;
     final textColor = _getTextColor(context);
 
     return WillPopScope(
       onWillPop: _onWillPop,
       child: Scaffold(
-        backgroundColor: Color(
-            int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000),
+        backgroundColor: backgroundColor,
         appBar: AppBar(
           backgroundColor: Colors.transparent,
           iconTheme: IconThemeData(color: textColor),
@@ -493,11 +500,8 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                Color(int.parse(_selectedColor.substring(1, 7), radix: 16) +
-                    0xFF000000),
-                Color(int.parse(_selectedColor.substring(1, 7), radix: 16) +
-                        0xFF000000)
-                    .withOpacity(0.8),
+                backgroundColor,
+                backgroundColor.withOpacity(0.8),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,

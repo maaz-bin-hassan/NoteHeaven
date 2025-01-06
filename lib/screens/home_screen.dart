@@ -199,8 +199,19 @@ class NoteCard extends StatelessWidget {
 
   const NoteCard({super.key, required this.note});
 
+  Color _getDarkerColor(Color baseColor) {
+    final HSLColor hsl = HSLColor.fromColor(baseColor);
+    return hsl.withLightness((hsl.lightness * 0.8).clamp(0.0, 1.0)).toColor();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final baseColor =
+        Color(int.parse(note.color.substring(1, 7), radix: 16) + 0xFF000000);
+    final cardColor = isDarkMode ? _getDarkerColor(baseColor) : baseColor;
+    final textColor = isDarkMode ? Colors.white : Colors.black;
+
     return Hero(
       tag: 'note-${note.id}',
       child: Material(
@@ -218,12 +229,11 @@ class NoteCard extends StatelessWidget {
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
             decoration: BoxDecoration(
-              color: Color(int.parse(note.color.substring(1, 7), radix: 16) +
-                  0xFF000000),
+              color: cardColor,
               borderRadius: BorderRadius.circular(12),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
+                  color: Colors.black.withOpacity(isDarkMode ? 0.3 : 0.1),
                   blurRadius: 4,
                   offset: const Offset(0, 2),
                 ),
@@ -236,9 +246,10 @@ class NoteCard extends StatelessWidget {
                 children: [
                   Text(
                     note.title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
+                      color: textColor,
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -247,12 +258,17 @@ class NoteCard extends StatelessWidget {
                   Expanded(
                     child: Text(
                       note.content,
-                      style: const TextStyle(fontSize: 14),
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: textColor.withOpacity(0.8),
+                      ),
                       maxLines: 4,
                       overflow: TextOverflow.fade,
                     ),
                   ),
-                  if (note.images.isNotEmpty) const Icon(Icons.image, size: 16),
+                  if (note.images.isNotEmpty)
+                    Icon(Icons.image,
+                        size: 16, color: textColor.withOpacity(0.6)),
                 ],
               ),
             ),
