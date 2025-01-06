@@ -6,6 +6,7 @@ class Note {
   DateTime modifiedAt;
   List<String> images;
   String color;
+  List<String> audioRecordings;
 
   Note({
     required this.id,
@@ -15,6 +16,7 @@ class Note {
     required this.modifiedAt,
     this.images = const [],
     this.color = '#FFFFFF',
+    this.audioRecordings = const [],
   });
 
   // Convert Note to JSON
@@ -27,6 +29,7 @@ class Note {
       'modifiedAt': modifiedAt.toIso8601String(),
       'images': images,
       'color': color,
+      'audioRecordings': audioRecordings,
     };
   }
 
@@ -40,6 +43,7 @@ class Note {
       modifiedAt: DateTime.parse(json['modifiedAt']),
       images: List<String>.from(json['images']),
       color: json['color'],
+      audioRecordings: List<String>.from(json['audioRecordings'] ?? []),
     );
   }
 }

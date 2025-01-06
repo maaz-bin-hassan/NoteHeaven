@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 import '../models/note.dart';
 import '../services/note_service.dart';
 import '../widgets/drawing_canvas.dart';
+import '../services/audio_service.dart';
 
 class NoteEditorScreen extends StatefulWidget {
   final Note? note;
@@ -28,6 +29,9 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   double _strokeWidth = 3.0;
   List<DrawingPoint> _drawings = [];
   bool _isDrawingMode = false;
+  final AudioService _audioService = AudioService();
+  final List<String> _audioRecordings = [];
+  bool _isRecording = false;
 
   @override
   void initState() {
@@ -235,6 +239,28 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     }
   }
 
+  Future<void> _toggleRecording() async {
+    if (!_isRecording) {
+      final path = await _audioService.startRecording();
+      if (path != null) {
+        setState(() {
+          _isRecording = true;
+          _isEdited = true;
+        });
+      } else {
+        _showError('Failed to start recording');
+      }
+    } else {
+      final path = await _audioService.stopRecording();
+      if (path != null) {
+        setState(() {
+          _audioRecordings.add(path);
+          _isRecording = false;
+        });
+      }
+    }
+  }
+
   Widget _buildColorPicker() {
     return SizedBox(
       width: MediaQuery.of(context).size.width * 0.5,
@@ -350,14 +376,83 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     );
   }
 
+  Widget _buildAudioRecordings() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_audioRecordings.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text(
+            'Recordings',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _audioRecordings.length,
+            itemBuilder: (context, index) {
+              return Card(
+                child: ListTile(
+                  leading: IconButton(
+                    icon: Icon(
+                      _audioService.isPlaying ? Icons.stop : Icons.play_arrow,
+                    ),
+                    onPressed: () async {
+                      if (_audioService.isPlaying) {
+                        await _audioService.stopPlaying();
+                      } else {
+                        await _audioService
+                            .playRecording(_audioRecordings[index]);
+                      }
+                      setState(() {});
+                    },
+                  ),
+                  title: Text('Recording ${index + 1}'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete),
+                    onPressed: () {
+                      setState(() {
+                        _audioRecordings.removeAt(index);
+                        _isEdited = true;
+                      });
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ],
+    );
+  }
+
+  Color _getTextColor(BuildContext context) {
+    if (Theme.of(context).brightness == Brightness.dark) {
+      // Get the perceived brightness of the background color
+      final backgroundColorInt =
+          int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000;
+      final backgroundColor = Color(backgroundColorInt);
+      final backgroundBrightness = backgroundColor.computeLuminance();
+
+      // Return white for dark backgrounds, black for light backgrounds
+      return backgroundBrightness < 0.5 ? Colors.white : Colors.black;
+    }
+    return Colors.black;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final textColor = _getTextColor(context);
+
     return WillPopScope(
       onWillPop: _onWillPop,
       child: Scaffold(
         backgroundColor: Color(
             int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000),
         appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          iconTheme: IconThemeData(color: textColor),
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: () async {
@@ -368,12 +463,12 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
           ),
           actions: [
             IconButton(
-              icon: const Icon(Icons.save),
+              icon: Icon(Icons.save, color: textColor),
               onPressed: _saveNote,
               tooltip: 'Save note',
             ),
             IconButton(
-              icon: const Icon(Icons.share),
+              icon: Icon(Icons.share, color: textColor),
               onPressed: () {
                 HapticFeedback.lightImpact();
                 final text =
@@ -383,12 +478,12 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
               tooltip: 'Share note',
             ),
             IconButton(
-              icon: const Icon(Icons.image),
+              icon: Icon(Icons.image, color: textColor),
               onPressed: _pickImage,
               tooltip: 'Add image',
             ),
             IconButton(
-              icon: const Icon(Icons.color_lens),
+              icon: Icon(Icons.color_lens, color: textColor),
               onPressed: _showColorPicker,
               tooltip: 'Change color',
             ),
@@ -414,13 +509,17 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
               children: [
                 TextField(
                   controller: _titleController,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.bold,
+                    color: textColor,
                   ),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     hintText: 'Title',
                     border: InputBorder.none,
+                    hintStyle: TextStyle(
+                      color: textColor.withOpacity(0.6),
+                    ),
                   ),
                 ),
                 if (_images.isNotEmpty) ...[
@@ -473,10 +572,16 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                   TextField(
                     controller: _contentController,
                     maxLines: null,
-                    style: const TextStyle(fontSize: 16),
-                    decoration: const InputDecoration(
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: textColor,
+                    ),
+                    decoration: InputDecoration(
                       hintText: 'Start writing...',
                       border: InputBorder.none,
+                      hintStyle: TextStyle(
+                        color: textColor.withOpacity(0.6),
+                      ),
                     ),
                   ),
                 ] else ...[
@@ -494,11 +599,23 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                       size: const Size(double.infinity, 200),
                     ),
                   ),
+                if (_audioRecordings.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).cardColor,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: _buildAudioRecordings(),
+                  ),
               ],
             ),
           ),
         ),
         bottomNavigationBar: BottomAppBar(
+          color: Theme.of(context).brightness == Brightness.dark
+              ? Theme.of(context).colorScheme.surface
+              : null,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
@@ -507,8 +624,16 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                 onPressed: _toggleDrawingMode,
                 tooltip:
                     _isDrawingMode ? 'Switch to text' : 'Switch to drawing',
+                color: Theme.of(context).colorScheme.primary,
               ),
-              // Add more tools here
+              IconButton(
+                icon: Icon(_isRecording ? Icons.stop : Icons.mic),
+                onPressed: _toggleRecording,
+                color: _isRecording
+                    ? Colors.red
+                    : Theme.of(context).colorScheme.primary,
+                tooltip: _isRecording ? 'Stop recording' : 'Start recording',
+              ),
             ],
           ),
         ),
@@ -521,6 +646,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     _titleController.dispose();
     _contentController.dispose();
     _colorPickerController.dispose();
+    _audioService.dispose();
     super.dispose();
   }
 }
