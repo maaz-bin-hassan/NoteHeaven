@@ -1,106 +1,94 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'dart:io';
-import './storage_service.dart';
 import '../models/note.dart';
 
 class NoteService {
+  final _firestore = FirebaseFirestore.instance;
+  final _storage = FirebaseStorage.instance;
+  final _auth = FirebaseAuth.instance;
+
+  List<Note> _cachedNotes = [];
+  StreamController<List<Note>>? _notesController;
+  String? _currentUserId;
+
+  // Singleton pattern
   static final NoteService _instance = NoteService._internal();
   factory NoteService() => _instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
-  late StreamController<List<Note>> _notesStreamController;
-  List<Note> _currentNotes = [];
-  bool _isInitialized = false;
-  StreamSubscription? _notesSubscription;
-  final StorageService _storageService = StorageService();
-  String? currentUserId;
-
   NoteService._internal() {
-    _createStreamController();
+    // Initialize auth state listener
+    _auth.authStateChanges().listen((user) {
+      _currentUserId = user?.uid;
+      _resetStream();
+    });
   }
 
-  void _createStreamController() {
-    _notesStreamController = StreamController<List<Note>>.broadcast();
+  String? get currentUserId => _currentUserId;
+
+  void _resetStream() {
+    _notesController?.close();
+    _notesController = null;
+    _cachedNotes = [];
   }
 
-  Future<void> init() async {
-    if (_notesStreamController.isClosed) {
-      _createStreamController();
+  Stream<List<Note>> get notesStream {
+    _notesController ??= StreamController<List<Note>>.broadcast();
+
+    if (_currentUserId == null) {
+      _notesController!.add([]);
+      return _notesController!.stream;
     }
 
-    // Cancel existing subscription if any
-    await _notesSubscription?.cancel();
-    _notesSubscription = null;
-
-    if (currentUserId == null) {
-      debugPrint('No user ID set, skipping initialization');
-      _notesStreamController.add([]);
-      return;
+    if (_cachedNotes.isNotEmpty) {
+      _notesController!.add(_cachedNotes);
     }
 
+    _firestore
+        .collection('notes')
+        .where('userId', isEqualTo: _currentUserId)
+        .orderBy('timestamp', descending: true)
+        .snapshots()
+        .listen(
+      (snapshot) {
+        _cachedNotes = snapshot.docs
+            .map((doc) => Note.fromJson({...doc.data(), 'id': doc.id}))
+            .toList();
+        _notesController!.add(_cachedNotes);
+      },
+      onError: (error) {
+        debugPrint('Error fetching notes: $error');
+        _notesController!.addError(error);
+      },
+    );
+
+    return _notesController!.stream;
+  }
+
+  // Upload file helper method
+  Future<String?> _uploadFile(File file, String path) async {
     try {
-      debugPrint('Initializing NoteService for user: $currentUserId');
-
-      _notesSubscription = _firestore
-          .collection('notes')
-          .where('userId', isEqualTo: currentUserId)
-          .snapshots()
-          .handleError((error) {
-        debugPrint('Error in notes stream: $error');
-        _notesStreamController.add([]);
-      }).listen(
-        (snapshot) {
-          try {
-            final notes = snapshot.docs.map((doc) {
-              final data = doc.data();
-              data['id'] = doc.id;
-              return Note.fromJson(data);
-            }).toList();
-
-            notes.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-            _currentNotes = notes;
-
-            if (!_notesStreamController.isClosed) {
-              _notesStreamController.add(_currentNotes);
-            }
-
-            debugPrint('Loaded ${notes.length} notes for user $currentUserId');
-          } catch (e) {
-            debugPrint('Error processing notes: $e');
-            _notesStreamController.add(_currentNotes);
-          }
-        },
-        onError: (error) {
-          debugPrint('Error listening to notes: $error');
-          _notesStreamController.add(_currentNotes);
-        },
-      );
-
-      _isInitialized = true;
-      debugPrint('NoteService initialized successfully');
+      final ref = _storage.ref().child(path);
+      final uploadTask = ref.putFile(file);
+      final snapshot = await uploadTask;
+      return await snapshot.ref.getDownloadURL();
     } catch (e) {
-      debugPrint('Error initializing NoteService: $e');
-      if (!_notesStreamController.isClosed) {
-        _notesStreamController.add([]);
-      }
+      debugPrint('Error uploading file: $e');
+      return null;
     }
   }
 
-  // Set user ID method
-  void setUserId(String uid) async {
-    debugPrint('Setting user ID: $uid');
-    if (currentUserId != uid) {
-      currentUserId = uid;
-      _isInitialized = false;
-      await init();
-      debugPrint('Reinitialized NoteService with new user ID: $uid');
+  // Delete file helper method
+  Future<void> _deleteFile(String url) async {
+    try {
+      final ref = _storage.refFromURL(url);
+      await ref.delete();
+    } catch (e) {
+      debugPrint('Error deleting file: $e');
     }
   }
-
-  Stream<List<Note>> get notesStream => _notesStreamController.stream;
 
   Future<void> addNote(Note note) async {
     try {
@@ -116,7 +104,8 @@ class NoteService {
         if (!imagePath.startsWith('http')) {
           final file = File(imagePath);
           if (await file.exists()) {
-            final url = await _storageService.uploadImage(file);
+            final url =
+                await _uploadFile(file, 'images/${file.uri.pathSegments.last}');
             if (url != null) {
               imageUrls.add(url);
               debugPrint('Image uploaded successfully: $url');
@@ -134,7 +123,8 @@ class NoteService {
         if (!audioPath.startsWith('http')) {
           final file = File(audioPath);
           if (await file.exists()) {
-            final url = await _storageService.uploadAudio(file);
+            final url =
+                await _uploadFile(file, 'audio/${file.uri.pathSegments.last}');
             if (url != null) {
               audioUrls.add(url);
               debugPrint('Audio file uploaded: $url');
@@ -178,7 +168,8 @@ class NoteService {
 
       for (String imagePath in note.images) {
         if (!imagePath.startsWith('http')) {
-          final url = await _storageService.uploadImage(File(imagePath));
+          final url = await _uploadFile(File(imagePath),
+              'images/${File(imagePath).uri.pathSegments.last}');
           if (url != null) {
             imageUrls.add(url);
           }
@@ -189,7 +180,8 @@ class NoteService {
 
       for (String audioPath in note.audioRecordings) {
         if (!audioPath.startsWith('http')) {
-          final url = await _storageService.uploadAudio(File(audioPath));
+          final url = await _uploadFile(File(audioPath),
+              'audio/${File(audioPath).uri.pathSegments.last}');
           if (url != null) {
             audioUrls.add(url);
           }
@@ -224,13 +216,13 @@ class NoteService {
           // Delete images
           if (data['images'] != null) {
             for (String url in List<String>.from(data['images'])) {
-              await _storageService.deleteFile(url);
+              await _deleteFile(url);
             }
           }
           // Delete audio recordings
           if (data['audioRecordings'] != null) {
             for (String url in List<String>.from(data['audioRecordings'])) {
-              await _storageService.deleteFile(url);
+              await _deleteFile(url);
             }
           }
         }
@@ -244,17 +236,9 @@ class NoteService {
     }
   }
 
-  @override
-  Future<void> dispose() async {
-    try {
-      await _notesSubscription?.cancel();
-      if (!_notesStreamController.isClosed) {
-        await _notesStreamController.close();
-      }
-      _isInitialized = false;
-      debugPrint('NoteService disposed');
-    } catch (e) {
-      debugPrint('Error disposing NoteService: $e');
-    }
+  void dispose() {
+    _notesController?.close();
+    _notesController = null;
+    _cachedNotes = [];
   }
 }

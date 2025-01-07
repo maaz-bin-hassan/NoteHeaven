@@ -35,7 +35,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    // Get theme mode from widget property instead of context
     final isDark = widget.isDarkMode;
 
     return Scaffold(
@@ -52,9 +51,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ),
         child: StreamBuilder<List<Note>>(
           stream: widget.noteService.notesStream,
-          initialData: const [], // Add this line
-          key: const PageStorageKey('notes_stream'), // Add this line
+          initialData: const [],
+          key: const PageStorageKey('notes_stream'),
           builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              debugPrint('Error loading notes: ${snapshot.error}');
+              return Center(
+                child: Text('Error loading notes: ${snapshot.error}'),
+              );
+            }
+
             if (snapshot.connectionState == ConnectionState.waiting) {
               return Center(
                 child: Column(
@@ -106,7 +112,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Tap the + button to get started',
+                      'Your creative journey starts here',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             color: Theme.of(context)
                                 .colorScheme
@@ -114,33 +120,82 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                 .withOpacity(0.7),
                           ),
                     ),
+                    const SizedBox(height: 16),
+                    Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.mic, size: 20),
+                            const SizedBox(width: 8),
+                            Text('Record voice notes',
+                                style: Theme.of(context).textTheme.bodyMedium),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.image, size: 20),
+                            const SizedBox(width: 8),
+                            Text('Attach images & photos',
+                                style: Theme.of(context).textTheme.bodyMedium),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.draw, size: 20),
+                            const SizedBox(width: 8),
+                            Text('Draw & sketch ideas',
+                                style: Theme.of(context).textTheme.bodyMedium),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'Tap the + button to get started',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                    ),
                   ],
                 ),
               );
             }
 
-            return AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              child: GridView.builder(
-                padding: const EdgeInsets.all(16),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  crossAxisSpacing: 16,
-                  mainAxisSpacing: 16,
-                ),
-                itemCount: snapshot.data!.length,
-                itemBuilder: (context, index) {
-                  return FadeScaleTransition(
-                    animation: Tween<double>(begin: 0.0, end: 1.0).animate(
-                      CurvedAnimation(
-                        parent: ModalRoute.of(context)!.animation!,
-                        curve: Interval((index * 0.1).clamp(0, 1), 1.0,
-                            curve: Curves.easeOut),
-                      ),
-                    ),
-                    child: NoteCard(note: snapshot.data![index]),
-                  );
-                },
+            return PageStorage(
+              bucket: PageStorageBucket(),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                child: snapshot.hasData
+                    ? GridView.builder(
+                        key: const PageStorageKey('notes_grid'),
+                        padding: const EdgeInsets.all(16),
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          crossAxisSpacing: 16,
+                          mainAxisSpacing: 16,
+                        ),
+                        itemCount: snapshot.data!.length,
+                        itemBuilder: (context, index) {
+                          return FadeScaleTransition(
+                            animation:
+                                Tween<double>(begin: 0.0, end: 1.0).animate(
+                              CurvedAnimation(
+                                parent: ModalRoute.of(context)!.animation!,
+                                curve: Interval((index * 0.1).clamp(0, 1), 1.0,
+                                    curve: Curves.easeOut),
+                              ),
+                            ),
+                            child: NoteCard(note: snapshot.data![index]),
+                          );
+                        },
+                      )
+                    : const Center(child: CircularProgressIndicator()),
               ),
             );
           },
@@ -216,13 +271,23 @@ class NoteCard extends StatelessWidget {
     return hsl.withLightness((hsl.lightness * 0.8).clamp(0.0, 1.0)).toColor();
   }
 
+  // Add this new method to calculate contrasting text color
+  Color _getContrastingTextColor(Color backgroundColor) {
+    // Calculate relative luminance
+    double luminance = backgroundColor.computeLuminance();
+
+    // Use white text for dark backgrounds, black text for light backgrounds
+    // The threshold 0.5 can be adjusted if needed
+    return luminance > 0.5 ? Colors.black : Colors.white;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final baseColor =
         Color(int.parse(note.color.substring(1, 7), radix: 16) + 0xFF000000);
     final cardColor = isDarkMode ? _getDarkerColor(baseColor) : baseColor;
-    final textColor = isDarkMode ? Colors.white : Colors.black;
+    final textColor = _getContrastingTextColor(cardColor);
 
     return Hero(
       tag: 'note-${note.id}',

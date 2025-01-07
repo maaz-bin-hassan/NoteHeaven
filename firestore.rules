@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is signed in
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Helper function to check if user owns the document
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /notes/{noteId} {
+      // Read, update, and delete - check if user owns the document
+      allow read, update, delete: if request.auth != null && 
+                                  resource.data.userId == request.auth.uid;
+      
+      // Create - check if user is setting themselves as owner and has all required fields
+      allow create: if request.auth != null && 
+                     request.resource.data.userId == request.auth.uid && 
+                     request.resource.data.keys().hasAll([
+                       'title', 
+                       'content', 
+                       'userId', 
+                       'timestamp',
+                       'images',
+                       'color',
+                       'audioRecordings',
+                       'titleColor',
+                       'contentColor',
+                       'createdAt',
+                       'modifiedAt'
+                     ]) &&
+                     // Validate data types
+                     request.resource.data.title is string &&
+                     request.resource.data.content is string &&
+                     request.resource.data.userId is string &&
+                     request.resource.data.images is list &&
+                     request.resource.data.color is string &&
+                     request.resource.data.audioRecordings is list &&
+                     request.resource.data.titleColor is number &&
+                     request.resource.data.contentColor is number &&
+                     request.resource.data.createdAt is string &&
+                     request.resource.data.modifiedAt is string;
+    }
+
+    match /users/{userId} {
+      allow read, write: if request.auth.uid == userId;
+    }
+  }
+}

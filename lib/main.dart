@@ -1,12 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:firebase_auth/firebase_auth.dart'; // Add this import
+import 'package:firebase_auth/firebase_auth.dart';
 import 'screens/home_screen.dart';
 import 'services/note_service.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'screens/login_screen.dart';
 import 'services/auth_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+// Add extension method to help find app state
+extension BuildContextExtensions on BuildContext {
+  _MyAppState? findAppState() {
+    return findAncestorStateOfType<_MyAppState>();
+  }
+}
 
 void main() async {
   try {
@@ -14,21 +22,6 @@ void main() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
-
-    final authService = AuthService();
-    final noteService = NoteService();
-
-    // Listen to auth state changes
-    FirebaseAuth.instance.authStateChanges().listen((User? user) {
-      if (user != null) {
-        debugPrint('User is signed in with ID: ${user.uid}');
-        noteService.setUserId(user.uid);
-      } else {
-        debugPrint('User is signed out');
-        noteService.setUserId('');
-      }
-    });
-
     debugPrint('App initialized successfully');
     runApp(const MyApp());
   } catch (e) {
@@ -46,36 +39,33 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   bool _isDarkMode = false;
   final _noteService = NoteService();
-
-  // Make isDarkMode accessible
-  bool get isDarkMode => _isDarkMode;
-
-  static _MyAppState of(BuildContext context) {
-    return context.findAncestorStateOfType<_MyAppState>()!;
-  }
+  final _prefs = SharedPreferences.getInstance();
 
   @override
   void initState() {
     super.initState();
-    _initializeServices();
+    _loadThemePreference();
   }
 
-  Future<void> _initializeServices() async {
-    await _noteService.init();
-
-    // Initialize with current user if exists
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser != null) {
-      _noteService.setUserId(currentUser.uid);
-    }
-  }
-
-  void toggleTheme() {
+  Future<void> _loadThemePreference() async {
+    final prefs = await _prefs;
     setState(() {
-      _isDarkMode = !_isDarkMode;
-      debugPrint('Theme toggled: isDarkMode = $_isDarkMode'); // Add debug print
+      _isDarkMode = prefs.getBool('isDarkMode') ?? false;
     });
   }
+
+  Future<void> _toggleTheme() async {
+    final prefs = await _prefs;
+    setState(() {
+      _isDarkMode = !_isDarkMode;
+      prefs.setBool('isDarkMode', _isDarkMode);
+    });
+    debugPrint('Theme toggled: isDarkMode = $_isDarkMode');
+  }
+
+  // Make these methods public so they can be accessed from LoginScreen
+  bool get isDarkMode => _isDarkMode;
+  void toggleTheme() => _toggleTheme();
 
   @override
   Widget build(BuildContext context) {
@@ -88,7 +78,7 @@ class _MyAppState extends State<MyApp> {
           primary: const Color(0xFF6B4EFF),
           secondary: const Color(0xFF51E1C3),
           background: const Color(0xFFF8F9FE),
-          brightness: Brightness.light, // Changed this
+          brightness: Brightness.light,
         ),
         useMaterial3: true,
         fontFamily: 'Poppins',
@@ -112,7 +102,7 @@ class _MyAppState extends State<MyApp> {
           primary: const Color(0xFF6B4EFF),
           secondary: const Color(0xFF51E1C3),
           background: const Color(0xFF1A1A1A),
-          brightness: Brightness.dark, // Make sure this is set
+          brightness: Brightness.dark,
         ),
         useMaterial3: true,
         fontFamily: 'Poppins',
@@ -124,22 +114,21 @@ class _MyAppState extends State<MyApp> {
       ),
       themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
       home: StreamBuilder<User?>(
-        stream: AuthService().authStateChanges,
+        stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
 
           if (snapshot.hasData) {
-            _noteService.setUserId(snapshot.data!.uid);
             return HomeScreen(
-              onThemeToggle: toggleTheme,
+              onThemeToggle: _toggleTheme,
               isDarkMode: _isDarkMode,
               noteService: _noteService,
             );
           }
 
-          return LoginScreen();
+          return const LoginScreen();
         },
       ),
     );
@@ -149,17 +138,5 @@ class _MyAppState extends State<MyApp> {
   void dispose() {
     _noteService.dispose();
     super.dispose();
-  }
-}
-
-// Create a way to access the state from anywhere
-extension BuildContextExtension on BuildContext {
-  _MyAppState? findAppState() {
-    try {
-      return findRootAncestorStateOfType<_MyAppState>();
-    } catch (e) {
-      debugPrint('Error finding app state: $e');
-      return null;
-    }
   }
 }

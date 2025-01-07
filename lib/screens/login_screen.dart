@@ -5,11 +5,49 @@ import '../services/note_service.dart';
 import 'home_screen.dart';
 import '../main.dart'; // Add this import
 
-class LoginScreen extends StatelessWidget {
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
   final AuthService _authService = AuthService();
   final NoteService _noteService = NoteService();
+  bool _isLoading = false;
 
-  LoginScreen({super.key});
+  Future<void> _handleSignIn(BuildContext context) async {
+    setState(() => _isLoading = true);
+    try {
+      final userCredential = await _authService.signInWithGoogle();
+      if (userCredential != null && mounted) {
+        final appState = context.findAppState();
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => HomeScreen(
+                onThemeToggle: appState?.toggleTheme ?? () {},
+                isDarkMode: appState?.isDarkMode ?? false,
+                noteService: _noteService,
+              ),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error signing in: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -37,32 +75,7 @@ class LoginScreen extends StatelessWidget {
               const SizedBox(height: 48),
               // Sign in button
               ElevatedButton(
-                onPressed: () async {
-                  try {
-                    final userCredential =
-                        await _authService.signInWithGoogle();
-                    if (userCredential != null && context.mounted) {
-                      // Use the extension method to find app state
-                      final appState = context.findAppState();
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => HomeScreen(
-                            onThemeToggle: appState?.toggleTheme ?? () {},
-                            isDarkMode: appState?.isDarkMode ?? false,
-                            noteService: _noteService,
-                          ),
-                        ),
-                      );
-                    }
-                  } catch (e) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error signing in: $e')),
-                      );
-                    }
-                  }
-                },
+                onPressed: _isLoading ? null : () => _handleSignIn(context),
                 style: ElevatedButton.styleFrom(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
@@ -70,17 +83,24 @@ class LoginScreen extends StatelessWidget {
                     borderRadius: BorderRadius.circular(30),
                   ),
                 ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Image.asset('assets/images/google_logo.png', height: 24),
-                    const SizedBox(width: 12),
-                    const Text(
-                      'Sign in with Google',
-                      style: TextStyle(fontSize: 16),
-                    ),
-                  ],
-                ),
+                child: _isLoading
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Image.asset('assets/images/google_logo.png',
+                              height: 24),
+                          const SizedBox(width: 12),
+                          const Text(
+                            'Sign in with Google',
+                            style: TextStyle(fontSize: 16),
+                          ),
+                        ],
+                      ),
               ),
             ],
           ),
