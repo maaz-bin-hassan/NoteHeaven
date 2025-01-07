@@ -78,7 +78,8 @@ class AudioService {
 
   Future<void> playRecording(String path) async {
     try {
-      if (_isPlaying) {
+      // Stop any currently playing audio before playing new one
+      if (_isPlaying && _currentlyPlayingPath != path) {
         await stopPlaying();
       }
 
@@ -90,7 +91,6 @@ class AudioService {
       _isPlaying = true;
       _currentlyPlayingPath = path;
 
-      // Listen for playback completion
       _audioPlayer.onPlayerComplete.listen((_) {
         _isPlaying = false;
         _currentlyPlayingPath = null;
@@ -108,8 +108,6 @@ class AudioService {
       _isPlaying = false;
       _currentlyPlayingPath = null;
     } catch (e) {
-      _isPlaying = false;
-      _currentlyPlayingPath = null;
       rethrow;
     }
   }

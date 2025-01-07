@@ -10,6 +10,9 @@ import '../widgets/drawing_canvas.dart';
 import '../services/audio_service.dart';
 import 'drawing_screen.dart';
 import '../widgets/audio_player_widget.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../services/auth_service.dart';
+import 'login_screen.dart';
 
 class NoteEditorScreen extends StatefulWidget {
   final Note? note;
@@ -21,6 +24,7 @@ class NoteEditorScreen extends StatefulWidget {
 
 class _NoteEditorScreenState extends State<NoteEditorScreen>
     with SingleTickerProviderStateMixin {
+  bool _isSaving = false;
   late TextEditingController _titleController;
   late TextEditingController _contentController;
   final List<String> _images = [];
@@ -210,10 +214,20 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     }
 
     try {
+      setState(() => _isSaving = true); // Set loading state
+
+      final userId = AuthService().currentUser?.uid;
+      if (userId == null) {
+        _showError('Not authenticated');
+        return;
+      }
+
       final note = Note(
-        id: widget.note?.id ?? const Uuid().v4(),
-        title: _titleController.text,
-        content: _contentController.text,
+        id: widget.note?.id ?? '',
+        title: _titleController.text.trim(),
+        content: _contentController.text.trim(),
+        userId: userId,
+        timestamp: DateTime.now(),
         createdAt: widget.note?.createdAt ?? DateTime.now(),
         modifiedAt: DateTime.now(),
         images: _images,
@@ -225,15 +239,30 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
 
       if (widget.note == null) {
         await _noteService.addNote(note);
-        debugPrint('New note created: ${note.title}');
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Note created successfully')),
+          );
       } else {
         await _noteService.updateNote(note);
-        debugPrint('Note updated: ${note.title}');
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Note updated successfully')),
+          );
       }
-      Navigator.pop(context);
+
+      if (mounted) {
+        Navigator.pop(context);
+      }
     } catch (e) {
       debugPrint('Error saving note: $e');
-      _showError('Failed to save note');
+      if (mounted) {
+        _showError('Failed to save note: ${e.toString()}');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
     }
   }
 
@@ -537,6 +566,65 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     final backgroundColor = isDarkMode ? _getDarkerColor(baseColor) : baseColor;
     final textColor = _getTextColor(context);
 
+    final actions = <Widget>[
+      if (widget.note != null)
+        IconButton(
+          icon: Icon(Icons.delete, color: textColor),
+          onPressed: () => _showDeleteConfirmation(context),
+          tooltip: 'Delete note',
+        ),
+      if (_isSaving)
+        const Padding(
+          padding: EdgeInsets.all(8.0),
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
+          ),
+        )
+      else
+        IconButton(
+          icon: Icon(Icons.save, color: textColor),
+          onPressed: _isSaving ? null : _saveNote, // Disable while saving
+          tooltip: 'Save note',
+        ),
+      IconButton(
+        icon: Icon(Icons.share, color: textColor),
+        onPressed: () {
+          HapticFeedback.lightImpact();
+          final text = '${_titleController.text}\n\n${_contentController.text}';
+          Share.share(text);
+        },
+        tooltip: 'Share note',
+      ),
+      IconButton(
+        icon: Icon(Icons.image, color: textColor),
+        onPressed: _pickImage,
+        tooltip: 'Add image',
+      ),
+      IconButton(
+        icon: Icon(Icons.color_lens, color: textColor),
+        onPressed: _showColorPicker,
+        tooltip: 'Change color',
+      ),
+      IconButton(
+        icon: const Icon(Icons.logout),
+        onPressed: () async {
+          await AuthService().signOut();
+          if (mounted) {
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (context) => LoginScreen()),
+              (route) => false,
+            );
+          }
+        },
+        tooltip: 'Sign out',
+      ),
+    ];
+
     return WillPopScope(
       onWillPop: _onWillPop,
       child: Scaffold(
@@ -552,33 +640,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
               }
             },
           ),
-          actions: [
-            IconButton(
-              icon: Icon(Icons.save, color: textColor),
-              onPressed: _saveNote,
-              tooltip: 'Save note',
-            ),
-            IconButton(
-              icon: Icon(Icons.share, color: textColor),
-              onPressed: () {
-                HapticFeedback.lightImpact();
-                final text =
-                    '${_titleController.text}\n\n${_contentController.text}';
-                Share.share(text);
-              },
-              tooltip: 'Share note',
-            ),
-            IconButton(
-              icon: Icon(Icons.image, color: textColor),
-              onPressed: _pickImage,
-              tooltip: 'Add image',
-            ),
-            IconButton(
-              icon: Icon(Icons.color_lens, color: textColor),
-              onPressed: _showColorPicker,
-              tooltip: 'Change color',
-            ),
-          ],
+          actions: actions,
         ),
         body: Container(
           decoration: BoxDecoration(
@@ -620,6 +682,38 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  void _showDeleteConfirmation(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Note'),
+        content: const Text('Are you sure you want to delete this note?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              try {
+                await _noteService.deleteNote(widget.note!.id);
+                if (mounted) {
+                  Navigator.pop(context); // Close dialog
+                  Navigator.pop(context); // Return to home screen
+                }
+              } catch (e) {
+                if (mounted) {
+                  _showError('Failed to delete note: ${e.toString()}');
+                }
+              }
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
       ),
     );
   }

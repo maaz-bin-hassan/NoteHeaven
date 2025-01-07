@@ -1,77 +1,169 @@
 import 'dart:async';
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
-import 'package:uuid/uuid.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'dart:io';
+import './storage_service.dart';
 import '../models/note.dart';
 
 class NoteService {
   static final NoteService _instance = NoteService._internal();
   factory NoteService() => _instance;
-  NoteService._internal();
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  static const String _storageKey = 'notes_data';
-  final List<Note> _notes = [];
-  final _notesStreamController = StreamController<List<Note>>.broadcast();
-  late SharedPreferences _prefs;
+  late StreamController<List<Note>> _notesStreamController;
+  List<Note> _currentNotes = [];
   bool _isInitialized = false;
+  StreamSubscription? _notesSubscription;
+  final StorageService _storageService = StorageService();
+  String? currentUserId;
+
+  NoteService._internal() {
+    _createStreamController();
+  }
+
+  void _createStreamController() {
+    _notesStreamController = StreamController<List<Note>>.broadcast();
+  }
 
   Future<void> init() async {
-    if (_isInitialized) return;
+    if (_notesStreamController.isClosed) {
+      _createStreamController();
+    }
+
+    // Cancel existing subscription if any
+    await _notesSubscription?.cancel();
+    _notesSubscription = null;
+
+    if (currentUserId == null) {
+      debugPrint('No user ID set, skipping initialization');
+      _notesStreamController.add([]);
+      return;
+    }
 
     try {
-      _prefs = await SharedPreferences.getInstance();
-      await _loadNotes();
+      debugPrint('Initializing NoteService for user: $currentUserId');
+
+      _notesSubscription = _firestore
+          .collection('notes')
+          .where('userId', isEqualTo: currentUserId)
+          .snapshots()
+          .handleError((error) {
+        debugPrint('Error in notes stream: $error');
+        _notesStreamController.add([]);
+      }).listen(
+        (snapshot) {
+          try {
+            final notes = snapshot.docs.map((doc) {
+              final data = doc.data();
+              data['id'] = doc.id;
+              return Note.fromJson(data);
+            }).toList();
+
+            notes.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+            _currentNotes = notes;
+
+            if (!_notesStreamController.isClosed) {
+              _notesStreamController.add(_currentNotes);
+            }
+
+            debugPrint('Loaded ${notes.length} notes for user $currentUserId');
+          } catch (e) {
+            debugPrint('Error processing notes: $e');
+            _notesStreamController.add(_currentNotes);
+          }
+        },
+        onError: (error) {
+          debugPrint('Error listening to notes: $error');
+          _notesStreamController.add(_currentNotes);
+        },
+      );
+
       _isInitialized = true;
       debugPrint('NoteService initialized successfully');
     } catch (e) {
       debugPrint('Error initializing NoteService: $e');
+      if (!_notesStreamController.isClosed) {
+        _notesStreamController.add([]);
+      }
+    }
+  }
+
+  // Set user ID method
+  void setUserId(String uid) async {
+    debugPrint('Setting user ID: $uid');
+    if (currentUserId != uid) {
+      currentUserId = uid;
+      _isInitialized = false;
+      await init();
+      debugPrint('Reinitialized NoteService with new user ID: $uid');
     }
   }
 
   Stream<List<Note>> get notesStream => _notesStreamController.stream;
 
-  Future<void> _loadNotes() async {
-    try {
-      final String? notesJson = _prefs.getString(_storageKey);
-      debugPrint('Loading notes from storage: $notesJson');
-
-      if (notesJson != null) {
-        final List<dynamic> decoded = jsonDecode(notesJson);
-        _notes.clear();
-        _notes.addAll(
-          decoded.map((noteJson) => Note.fromJson(noteJson)).toList(),
-        );
-        _notesStreamController.add(_notes);
-        debugPrint('Loaded ${_notes.length} notes');
-      }
-    } catch (e) {
-      debugPrint('Error loading notes: $e');
-    }
-  }
-
-  Future<void> _saveNotes() async {
-    try {
-      final String notesJson =
-          jsonEncode(_notes.map((note) => note.toJson()).toList());
-      await _prefs.setString(_storageKey, notesJson);
-      debugPrint('Saved ${_notes.length} notes to storage');
-
-      // Verify save
-      final saved = _prefs.getString(_storageKey);
-      debugPrint('Verification - Notes in storage: $saved');
-    } catch (e) {
-      debugPrint('Error saving notes: $e');
-      rethrow;
-    }
-  }
-
   Future<void> addNote(Note note) async {
     try {
-      _notes.add(note);
-      _notesStreamController.add(_notes);
-      await _saveNotes();
-      debugPrint('Added note: ${note.title}');
+      if (currentUserId == null) {
+        throw Exception('User not authenticated');
+      }
+
+      List<String> imageUrls = [];
+      List<String> audioUrls = [];
+
+      // Upload images with verification
+      for (String imagePath in note.images) {
+        if (!imagePath.startsWith('http')) {
+          final file = File(imagePath);
+          if (await file.exists()) {
+            final url = await _storageService.uploadImage(file);
+            if (url != null) {
+              imageUrls.add(url);
+              debugPrint('Image uploaded successfully: $url');
+            }
+          } else {
+            debugPrint('Image file not found: $imagePath');
+          }
+        } else {
+          imageUrls.add(imagePath);
+        }
+      }
+
+      // Upload audio recordings
+      for (String audioPath in note.audioRecordings) {
+        if (!audioPath.startsWith('http')) {
+          final file = File(audioPath);
+          if (await file.exists()) {
+            final url = await _storageService.uploadAudio(file);
+            if (url != null) {
+              audioUrls.add(url);
+              debugPrint('Audio file uploaded: $url');
+            }
+          } else {
+            debugPrint('Audio file not found: $audioPath');
+          }
+        } else {
+          audioUrls.add(audioPath);
+        }
+      }
+
+      final noteData = {
+        'title': note.title,
+        'content': note.content,
+        'userId': currentUserId,
+        'timestamp': FieldValue.serverTimestamp(),
+        'createdAt': note.createdAt.toIso8601String(),
+        'modifiedAt': DateTime.now().toIso8601String(),
+        'images': imageUrls,
+        'color': note.color,
+        'audioRecordings': audioUrls,
+        'titleColor': note.titleColor.value,
+        'contentColor': note.contentColor.value,
+      };
+
+      final docRef = await _firestore.collection('notes').add(noteData);
+      debugPrint(
+          'Added note with ID: ${docRef.id}, Images: $imageUrls, Audio: $audioUrls');
     } catch (e) {
       debugPrint('Error adding note: $e');
       rethrow;
@@ -80,13 +172,42 @@ class NoteService {
 
   Future<void> updateNote(Note note) async {
     try {
-      final index = _notes.indexWhere((n) => n.id == note.id);
-      if (index != -1) {
-        _notes[index] = note;
-        _notesStreamController.add(_notes);
-        await _saveNotes();
-        debugPrint('Updated note: ${note.title}');
+      // Similar changes as addNote method
+      List<String> imageUrls = [];
+      List<String> audioUrls = [];
+
+      for (String imagePath in note.images) {
+        if (!imagePath.startsWith('http')) {
+          final url = await _storageService.uploadImage(File(imagePath));
+          if (url != null) {
+            imageUrls.add(url);
+          }
+        } else {
+          imageUrls.add(imagePath);
+        }
       }
+
+      for (String audioPath in note.audioRecordings) {
+        if (!audioPath.startsWith('http')) {
+          final url = await _storageService.uploadAudio(File(audioPath));
+          if (url != null) {
+            audioUrls.add(url);
+          }
+        } else {
+          audioUrls.add(audioPath);
+        }
+      }
+
+      await _firestore.collection('notes').doc(note.id).update({
+        'title': note.title,
+        'content': note.content,
+        'modifiedAt': DateTime.now().toIso8601String(),
+        'images': imageUrls,
+        'color': note.color,
+        'audioRecordings': audioUrls,
+        'titleColor': note.titleColor.value,
+        'contentColor': note.contentColor.value,
+      });
     } catch (e) {
       debugPrint('Error updating note: $e');
       rethrow;
@@ -95,9 +216,27 @@ class NoteService {
 
   Future<void> deleteNote(String id) async {
     try {
-      _notes.removeWhere((note) => note.id == id);
-      _notesStreamController.add(_notes);
-      await _saveNotes();
+      // Get the note first to get image URLs
+      final noteDoc = await _firestore.collection('notes').doc(id).get();
+      if (noteDoc.exists) {
+        final data = noteDoc.data();
+        if (data != null) {
+          // Delete images
+          if (data['images'] != null) {
+            for (String url in List<String>.from(data['images'])) {
+              await _storageService.deleteFile(url);
+            }
+          }
+          // Delete audio recordings
+          if (data['audioRecordings'] != null) {
+            for (String url in List<String>.from(data['audioRecordings'])) {
+              await _storageService.deleteFile(url);
+            }
+          }
+        }
+      }
+
+      await _firestore.collection('notes').doc(id).delete();
       debugPrint('Deleted note with id: $id');
     } catch (e) {
       debugPrint('Error deleting note: $e');
@@ -105,10 +244,14 @@ class NoteService {
     }
   }
 
+  @override
   Future<void> dispose() async {
     try {
-      await _saveNotes();
-      _notesStreamController.close();
+      await _notesSubscription?.cancel();
+      if (!_notesStreamController.isClosed) {
+        await _notesStreamController.close();
+      }
+      _isInitialized = false;
       debugPrint('NoteService disposed');
     } catch (e) {
       debugPrint('Error disposing NoteService: $e');

@@ -21,6 +21,11 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
   Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
 
+  // Add this getter to check if this specific recording is playing
+  bool get isPlaying =>
+      widget.audioService.isPlaying &&
+      widget.audioService.currentlyPlayingPath == widget.audioPath;
+
   @override
   void initState() {
     super.initState();
@@ -33,7 +38,10 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
     });
 
     widget.audioService.player.onPositionChanged.listen((position) {
-      setState(() => _position = position);
+      if (mounted &&
+          widget.audioService.currentlyPlayingPath == widget.audioPath) {
+        setState(() => _position = position);
+      }
     });
 
     widget.audioService.player.onPlayerComplete.listen((_) {
@@ -58,42 +66,54 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
             Row(
               children: [
                 IconButton(
-                  icon: Icon(
-                    widget.audioService.isPlaying
-                        ? Icons.pause
-                        : Icons.play_arrow,
-                  ),
+                  icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
                   onPressed: () async {
-                    if (widget.audioService.isPlaying) {
-                      await widget.audioService.stopPlaying();
-                    } else {
-                      await widget.audioService.playRecording(widget.audioPath);
+                    try {
+                      if (isPlaying) {
+                        await widget.audioService.stopPlaying();
+                      } else {
+                        await widget.audioService
+                            .playRecording(widget.audioPath);
+                      }
+                      setState(() {});
+                    } catch (e) {
+                      // ...existing error handling...
                     }
-                    setState(() {});
                   },
                 ),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 6),
-                          overlayShape:
-                              const RoundSliderOverlayShape(overlayRadius: 14),
-                          trackHeight: 4,
-                        ),
-                        child: Slider(
-                          min: 0,
-                          max: _duration.inSeconds.toDouble(),
-                          value: _position.inSeconds.toDouble(),
-                          onChanged: (value) async {
-                            final position = Duration(seconds: value.toInt());
-                            await widget.audioService.player.seek(position);
-                            setState(() => _position = position);
-                          },
-                        ),
+                      StreamBuilder<Duration>(
+                        stream: widget.audioService.player.onPositionChanged,
+                        builder: (context, snapshot) {
+                          final position = isPlaying
+                              ? snapshot.data ?? Duration.zero
+                              : Duration.zero;
+                          return SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 6),
+                              overlayShape: const RoundSliderOverlayShape(
+                                  overlayRadius: 14),
+                              trackHeight: 4,
+                            ),
+                            child: Slider(
+                              min: 0,
+                              max: _duration.inSeconds.toDouble(),
+                              value: position.inSeconds.toDouble(),
+                              onChanged: isPlaying
+                                  ? (value) async {
+                                      final position =
+                                          Duration(seconds: value.toInt());
+                                      await widget.audioService.player
+                                          .seek(position);
+                                    }
+                                  : null,
+                            ),
+                          );
+                        },
                       ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -124,5 +144,13 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    if (isPlaying) {
+      widget.audioService.stopPlaying();
+    }
+    super.dispose();
   }
 }

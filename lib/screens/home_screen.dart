@@ -8,11 +8,13 @@ import '../utils/animations.dart';
 class HomeScreen extends StatefulWidget {
   final Function() onThemeToggle;
   final bool isDarkMode;
+  final NoteService noteService;
 
   const HomeScreen({
     super.key,
     required this.onThemeToggle,
     required this.isDarkMode,
+    required this.noteService,
   });
 
   @override
@@ -20,7 +22,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
-  final _noteService = NoteService();
   late AnimationController _fabController;
 
   @override
@@ -34,6 +35,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    // Get theme mode from widget property instead of context
+    final isDark = widget.isDarkMode;
+
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(
@@ -47,7 +51,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           ),
         ),
         child: StreamBuilder<List<Note>>(
-          stream: _noteService.notesStream,
+          stream: widget.noteService.notesStream,
+          initialData: const [], // Add this line
+          key: const PageStorageKey('notes_stream'), // Add this line
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return Center(
@@ -145,23 +151,29 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'My Notes ',
+              'NoteHeaven ',
               style: TextStyle(
                 fontWeight: FontWeight.bold,
                 color: Theme.of(context).colorScheme.primary,
               ),
             ),
-            const Text('📝', style: TextStyle(fontSize: 20)),
+            const Text('✨',
+                style: TextStyle(fontSize: 20)), // Changed to sparkles
           ],
         ),
         actions: [
           IconButton(
             icon: Icon(
-              widget.isDarkMode ? Icons.light_mode : Icons.dark_mode,
+              isDark ? Icons.light_mode : Icons.dark_mode,
               color: Theme.of(context).colorScheme.primary,
             ),
-            onPressed: widget.onThemeToggle,
-            tooltip: 'Toggle theme',
+            onPressed: () {
+              widget.onThemeToggle();
+              HapticFeedback.lightImpact();
+              debugPrint(
+                  'Theme toggle pressed, isDark: $isDark'); // Add debug print
+            },
+            tooltip: isDark ? 'Switch to light mode' : 'Switch to dark mode',
           ),
         ],
         backgroundColor: Colors.transparent,
@@ -254,6 +266,14 @@ class NoteCard extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _formatDate(note.createdAt),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: textColor.withOpacity(0.6),
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   Expanded(
                     child: Text(
@@ -266,9 +286,29 @@ class NoteCard extends StatelessWidget {
                       overflow: TextOverflow.fade,
                     ),
                   ),
-                  if (note.images.isNotEmpty)
-                    Icon(Icons.image,
-                        size: 16, color: textColor.withOpacity(0.6)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      if (note.images.isNotEmpty)
+                        Icon(Icons.image,
+                            size: 16, color: textColor.withOpacity(0.6)),
+                      if (note.images.isNotEmpty) const SizedBox(width: 4),
+                      if (note.audioRecordings.isNotEmpty)
+                        Icon(Icons.mic,
+                            size: 16, color: textColor.withOpacity(0.6)),
+                      if (note.audioRecordings.isNotEmpty)
+                        const SizedBox(width: 4),
+                      if (note.images.isNotEmpty ||
+                          note.audioRecordings.isNotEmpty)
+                        Text(
+                          _getAttachmentsCount(),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: textColor.withOpacity(0.6),
+                          ),
+                        ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -276,5 +316,25 @@ class NoteCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final difference = now.difference(date);
+
+    if (difference.inDays == 0) {
+      return 'Today';
+    } else if (difference.inDays == 1) {
+      return 'Yesterday';
+    } else if (difference.inDays < 7) {
+      return '${difference.inDays} days ago';
+    } else {
+      return '${date.day}/${date.month}/${date.year}';
+    }
+  }
+
+  String _getAttachmentsCount() {
+    final total = note.images.length + note.audioRecordings.length;
+    return '$total attachment${total > 1 ? 's' : ''}';
   }
 }
