@@ -1,0 +1,48 @@
+name: sharingnotes
+description: A modern note-taking app
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  path: ^1.8.3
+  cupertino_icons: ^1.0.8
+  share_plus: ^10.1.3
+  uuid: ^4.3.3
+  image_picker: ^1.1.2
+  record: ^5.0.1
+  audioplayers: ^5.2.1
+  path_provider: ^2.1.5
+  permission_handler: ^11.0.1
+  shared_preferences: ^2.3.5
+  sqflite: ^2.3.2
+  web_socket_channel: ^3.0.1
+  network_info_plus: ^6.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/placeholder.png
+    - assets/images/logo.png
+    - assets/fonts/Poppins/
+    - assets/images/google_logo.png
+
+  fonts:
+    - family: Poppins
+      fonts:
+        - asset: assets/fonts/Poppins/Poppins-Regular.ttf
+        - asset: assets/fonts/Poppins/Poppins-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Poppins/Poppins-Bold.ttf
+          weight: 700
