@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'dart:io';
 import '../models/note.dart';
 import 'database_helper.dart';
 
@@ -9,7 +8,6 @@ class NoteService {
   List<Note> _cachedNotes = [];
   StreamController<List<Note>>? _notesController;
 
-  // Singleton pattern
   static final NoteService _instance = NoteService._internal();
   factory NoteService() => _instance;
   NoteService._internal();

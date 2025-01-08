@@ -2,7 +2,8 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'package:flutter/material.dart'; // Add this import
+import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import '../models/note.dart';
 
 class DatabaseHelper {
@@ -56,52 +57,69 @@ class DatabaseHelper {
       await newDir.create(recursive: true);
     }
 
-    // Copy file to new location
     await file.copy(newPath);
     return newPath;
   }
 
+  Future<String> _getStoragePath() async {
+    if (kIsWeb) {
+      return '';
+    }
+    final directory = await getApplicationDocumentsDirectory();
+    return directory.path;
+  }
+
+  void _handleWebStorage() {}
+
   Future<List<Note>> getNotes() async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps =
-        await db.query('notes', orderBy: 'timestamp DESC');
+    try {
+      if (kIsWeb) {
+        return [];
+      }
+      final db = await database;
+      final List<Map<String, dynamic>> maps =
+          await db.query('notes', orderBy: 'timestamp DESC');
 
-    return List.generate(maps.length, (i) {
-      final Map<String, dynamic> noteMap = maps[i];
-      final images = noteMap['images'] != null
-          ? noteMap['images']
-              .toString()
-              .split(',')
-              .where((s) => s.isNotEmpty)
-              .toList()
-          : <String>[];
-      final audioRecordings = noteMap['audioRecordings'] != null
-          ? noteMap['audioRecordings']
-              .toString()
-              .split(',')
-              .where((s) => s.isNotEmpty)
-              .toList()
-          : <String>[];
+      return List.generate(maps.length, (i) {
+        final Map<String, dynamic> noteMap = maps[i];
+        final images = noteMap['images'] != null
+            ? noteMap['images']
+                .toString()
+                .split(',')
+                .where((s) => s.isNotEmpty)
+                .toList()
+            : <String>[];
+        final audioRecordings = noteMap['audioRecordings'] != null
+            ? noteMap['audioRecordings']
+                .toString()
+                .split(',')
+                .where((s) => s.isNotEmpty)
+                .toList()
+            : <String>[];
 
-      return Note(
-        id: noteMap['id'] ?? '',
-        title: noteMap['title'] ?? '',
-        content: noteMap['content'] ?? '',
-        timestamp: DateTime.parse(
-            noteMap['timestamp'] ?? DateTime.now().toIso8601String()),
-        createdAt: DateTime.parse(
-            noteMap['createdAt'] ?? DateTime.now().toIso8601String()),
-        modifiedAt: DateTime.parse(
-            noteMap['modifiedAt'] ?? DateTime.now().toIso8601String()),
-        images: images,
-        color: noteMap['color'] ?? '#FFFFFF',
-        audioRecordings: audioRecordings,
-        titleColor:
-            Color(int.parse(noteMap['titleColor']?.toString() ?? '0xFF000000')),
-        contentColor: Color(
-            int.parse(noteMap['contentColor']?.toString() ?? '0xFF000000')),
-      );
-    });
+        return Note(
+          id: noteMap['id'] ?? '',
+          title: noteMap['title'] ?? '',
+          content: noteMap['content'] ?? '',
+          timestamp: DateTime.parse(
+              noteMap['timestamp'] ?? DateTime.now().toIso8601String()),
+          createdAt: DateTime.parse(
+              noteMap['createdAt'] ?? DateTime.now().toIso8601String()),
+          modifiedAt: DateTime.parse(
+              noteMap['modifiedAt'] ?? DateTime.now().toIso8601String()),
+          images: images,
+          color: noteMap['color'] ?? '#FFFFFF',
+          audioRecordings: audioRecordings,
+          titleColor: Color(
+              int.parse(noteMap['titleColor']?.toString() ?? '0xFF000000')),
+          contentColor: Color(
+              int.parse(noteMap['contentColor']?.toString() ?? '0xFF000000')),
+        );
+      });
+    } catch (e) {
+      debugPrint('Error getting notes: $e');
+      return [];
+    }
   }
 
   Future<void> insertNote(
@@ -171,14 +189,12 @@ class DatabaseHelper {
   Future<void> deleteNote(String id) async {
     final db = await database;
 
-    // Get note data before deletion to clean up files
     final note = await db.query('notes', where: 'id = ?', whereArgs: [id]);
     if (note.isNotEmpty) {
       final images = note.first['images'].toString().split(',');
       final audioRecordings =
           note.first['audioRecordings'].toString().split(',');
 
-      // Delete associated files
       for (String path in [...images, ...audioRecordings]) {
         if (path.isNotEmpty) {
           final file = File(path);

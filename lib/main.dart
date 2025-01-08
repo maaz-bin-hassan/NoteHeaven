@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart'; // Add this import
+import 'package:flutter/services.dart';
 import 'screens/home_screen.dart';
 import 'services/note_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Add extension method to help find app state
 extension BuildContextExtensions on BuildContext {
   _MyAppState? findAppState() {
     return findAncestorStateOfType<_MyAppState>();
@@ -62,7 +61,6 @@ class _MyAppState extends State<MyApp> {
     }
   }
 
-  // Make these methods public so they can be accessed from LoginScreen
   bool get isDarkMode => _isDarkMode;
   void toggleTheme() => _toggleTheme();
 

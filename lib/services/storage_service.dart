@@ -26,7 +26,6 @@ class StorageService {
           '${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
       final String newPath = path.join(storageDir.path, fileName);
 
-      // Copy file to app storage
       final File newFile = await file.copy(newPath);
       debugPrint('File saved locally: ${newFile.path}');
 

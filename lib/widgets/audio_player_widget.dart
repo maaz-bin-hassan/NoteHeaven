@@ -21,7 +21,6 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
   Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
 
-  // Add this getter to check if this specific recording is playing
   bool get isPlaying =>
       widget.audioService.isPlaying &&
       widget.audioService.currentlyPlayingPath == widget.audioPath;
@@ -82,9 +81,7 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
                             .playRecording(widget.audioPath);
                       }
                       setState(() {});
-                    } catch (e) {
-                      // ...existing error handling...
-                    }
+                    } catch (e) {}
                   },
                 ),
                 Expanded(

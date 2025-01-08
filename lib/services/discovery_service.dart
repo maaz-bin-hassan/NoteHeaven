@@ -97,7 +97,7 @@ class DiscoveryService {
   }
 
   List<String> _getFilteredPeers() {
-    return _discoveredPeers.keys.toList(); // Remove the filtering here
+    return _discoveredPeers.keys.toList();
   }
 
   void _startPeerCleanup() {

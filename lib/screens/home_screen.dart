@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/note.dart';
 import 'note_editor_screen.dart';
 import '../services/note_service.dart';
-import '../services/local_auth_service.dart';
 import '../utils/animations.dart';
-import 'search_screen.dart'; // Add this import
-import '../services/note_share_manager.dart'; // Add import
+import 'search_screen.dart';
+import '../services/note_share_manager.dart';
 
 class HomeScreen extends StatefulWidget {
   final Function() onThemeToggle;
@@ -26,8 +24,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
-  final _authService = LocalAuthService();
-  final _shareManager = NoteShareManager(); // Add this line
+  final _shareManager = NoteShareManager();
   late AnimationController _fabController;
 
   @override
@@ -37,7 +34,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       vsync: this,
       duration: const Duration(milliseconds: 300),
     );
-    _initializeSharing(); // Add this line
+    _initializeSharing();
   }
 
   Future<void> _initializeSharing() async {
@@ -268,8 +265,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                             ),
                             child: NoteCard(
                               note: snapshot.data![index],
-                              noteService:
-                                  widget.noteService, // Pass the noteService
+                              noteService: widget.noteService,
                             ),
                           );
                         },
@@ -295,7 +291,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             const SizedBox(width: 8),
             const Icon(
               Icons.auto_awesome,
-              color: Colors.amber, // Changed from secondary color to amber
+              color: Colors.amber,
               size: 20,
             ),
           ],
@@ -350,19 +346,19 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   @override
   void dispose() {
     _fabController.dispose();
-    _shareManager.dispose(); // Add this line
+    _shareManager.dispose();
     super.dispose();
   }
 }
 
 class NoteCard extends StatelessWidget {
   final Note note;
-  final NoteService noteService; // Add this line
+  final NoteService noteService;
 
   const NoteCard({
     super.key,
     required this.note,
-    required this.noteService, // Add this line
+    required this.noteService,
   });
 
   Color _getDarkerColor(Color baseColor) {
@@ -370,13 +366,9 @@ class NoteCard extends StatelessWidget {
     return hsl.withLightness((hsl.lightness * 0.8).clamp(0.0, 1.0)).toColor();
   }
 
-  // Add this new method to calculate contrasting text color
   Color _getContrastingTextColor(Color backgroundColor) {
-    // Calculate relative luminance
     double luminance = backgroundColor.computeLuminance();
 
-    // Use white text for dark backgrounds, black text for light backgrounds
-    // The threshold 0.5 can be adjusted if needed
     return luminance > 0.5 ? Colors.black : Colors.white;
   }
 
@@ -459,11 +451,10 @@ class NoteCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  // Wrap the Row with a SizedBox to constrain width
                   SizedBox(
                     width: double.infinity,
                     child: Row(
-                      mainAxisSize: MainAxisSize.min, // Add this
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         if (note.images.isNotEmpty) ...[
                           Icon(Icons.image,
@@ -478,7 +469,6 @@ class NoteCard extends StatelessWidget {
                         if (note.images.isNotEmpty ||
                             note.audioRecordings.isNotEmpty)
                           Flexible(
-                            // Wrap text with Flexible
                             child: Text(
                               _getAttachmentsCount(),
                               style: TextStyle(

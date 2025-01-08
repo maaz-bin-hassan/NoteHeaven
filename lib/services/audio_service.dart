@@ -3,6 +3,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 class AudioService {
   final _audioRecorder = AudioRecorder();
@@ -12,7 +13,6 @@ class AudioService {
   bool _isPlaying = false;
   String? _currentlyPlayingPath;
 
-  // Add getter for the audio player
   AudioPlayer get player => _audioPlayer;
 
   Future<bool> checkPermission() async {
@@ -24,6 +24,11 @@ class AudioService {
 
   Future<String?> startRecording() async {
     try {
+      if (kIsWeb) {
+        throw UnsupportedError(
+            'Audio recording is not supported on web platform');
+      }
+
       if (await checkPermission()) {
         await stopPlaying();
 
@@ -36,7 +41,6 @@ class AudioService {
         _currentRecordingPath =
             '${recordingsDir.path}/recording_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
-        // Updated recording configuration
         await _audioRecorder.start(
           RecordConfig(
             encoder: AudioEncoder.aacLc,
@@ -137,8 +141,6 @@ class AudioService {
       }
       await _audioRecorder.dispose();
       await _audioPlayer.dispose();
-    } catch (e) {
-      // Handle or log disposal errors
-    }
+    } catch (e) {}
   }
 }

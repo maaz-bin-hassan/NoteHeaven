@@ -7,7 +7,6 @@ import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 import '../models/note.dart';
 import '../services/note_service.dart';
-import '../services/local_auth_service.dart';
 import '../widgets/drawing_canvas.dart';
 import '../services/audio_service.dart';
 import 'drawing_screen.dart';
@@ -15,15 +14,16 @@ import '../widgets/audio_player_widget.dart';
 import '../widgets/image_preview.dart';
 import 'drawing_preview_screen.dart';
 import '../services/note_share_manager.dart';
+import 'package:flutter/foundation.dart';
 
 class NoteEditorScreen extends StatefulWidget {
   final Note? note;
-  final NoteService noteService; // Add this line
+  final NoteService noteService;
 
   const NoteEditorScreen({
     super.key,
     this.note,
-    required this.noteService, // Add this line
+    required this.noteService,
   });
 
   @override
@@ -37,8 +37,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   late TextEditingController _contentController;
   final List<String> _images = [];
   String _selectedColor = '#FFFFFF';
-  // Remove this line as we'll use widget.noteService instead
-  // final _noteService = NoteService();
+
   late AnimationController _colorPickerController;
   bool _isEdited = false;
   List<DrawingPoint> _drawings = [];
@@ -47,11 +46,10 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   final List<String> _audioRecordings = [];
   bool _isRecording = false;
 
-  // Add new properties for text colors
   Color _titleColor = Colors.black;
   Color _contentColor = Colors.black;
-  bool _isDrawingVisible = false; // Add this property
-  final _shareManager = NoteShareManager(); // Add property
+  bool _isDrawingVisible = false;
+  final _shareManager = NoteShareManager();
 
   @override
   void initState() {
@@ -232,7 +230,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     }
 
     try {
-      setState(() => _isSaving = true); // Set loading state
+      setState(() => _isSaving = true);
 
       final note = Note(
         id: widget.note?.id ??
@@ -249,8 +247,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
         audioRecordings: _audioRecordings,
       );
 
-      debugPrint(
-          'Saving note with recordings: ${note.audioRecordings}'); // Debug log
+      debugPrint('Saving note with recordings: ${note.audioRecordings}');
 
       if (widget.note == null) {
         await widget.noteService.addNote(note);
@@ -284,6 +281,11 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   }
 
   Future<void> _toggleRecording() async {
+    if (kIsWeb) {
+      _showError('Audio recording is not supported on web platform');
+      return;
+    }
+
     if (!_isRecording) {
       final path = await _audioService.startRecording();
       if (path != null) {
@@ -302,7 +304,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
           _isRecording = false;
           _isEdited = true; // Mark as edited when recording is added
         });
-        debugPrint('Added recording: $path'); // Debug log
+        debugPrint('Added recording: $path');
       }
     }
   }
@@ -462,6 +464,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
 
   Widget _buildMainContent(Color textColor) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -475,13 +478,15 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                   style: TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.bold,
-                    color: _titleColor,
+                    color: isDarkMode ? Colors.white : _titleColor,
                   ),
                   decoration: InputDecoration(
                     hintText: 'Title',
                     border: InputBorder.none,
                     hintStyle: TextStyle(
-                      color: textColor.withOpacity(0.6),
+                      color: isDarkMode
+                          ? Colors.white60
+                          : textColor.withOpacity(0.6),
                     ),
                   ),
                 ),
@@ -522,13 +527,15 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                   maxLines: null,
                   style: TextStyle(
                     fontSize: 16,
-                    color: _contentColor,
+                    color: isDarkMode ? Colors.white : _contentColor,
                   ),
                   decoration: InputDecoration(
                     hintText: 'Start writing...',
                     border: InputBorder.none,
                     hintStyle: TextStyle(
-                      color: textColor.withOpacity(0.6),
+                      color: isDarkMode
+                          ? Colors.white60
+                          : textColor.withOpacity(0.6),
                     ),
                   ),
                 ),
@@ -544,7 +551,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
             ],
           ),
 
-          // Drawings section - simplified
+          // Drawings section
           if (_drawings.isNotEmpty) ...[
             const SizedBox(height: 16),
             Row(
@@ -552,17 +559,18 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                 Text(
                   'Drawing attached',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Colors.black87,
+                        color: isDarkMode ? Colors.white : Colors.black87,
                       ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.visibility_rounded,
-                      color: Colors.black87),
+                  icon: Icon(Icons.visibility_rounded,
+                      color: isDarkMode ? Colors.white : Colors.black87),
                   onPressed: _toggleDrawingVisibility,
                   tooltip: 'View drawing',
                 ),
                 IconButton(
-                  icon: const Icon(Icons.edit_rounded, color: Colors.black87),
+                  icon: Icon(Icons.edit_rounded,
+                      color: isDarkMode ? Colors.white : Colors.black87),
                   onPressed: _openDrawingScreen,
                   tooltip: 'Edit drawing',
                 ),
@@ -696,14 +704,12 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
         appBar: AppBar(
           title: const Text('Note'),
           actions: [
-            // Change the icon to wifi_tethering or share_arrival_time
             IconButton(
-              icon:
-                  const Icon(Icons.wifi_tethering), // Changed from nearby_share
+              icon: const Icon(Icons.wifi_tethering),
               onPressed: _shareWithNearby,
               tooltip: 'Share with nearby devices',
             ),
-            if (widget.note != null) // Only show delete for existing notes
+            if (widget.note != null)
               IconButton(
                 icon: const Icon(Icons.delete_outline),
                 onPressed: _showDeleteDialog,

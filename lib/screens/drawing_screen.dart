@@ -51,7 +51,6 @@ class _DrawingScreenState extends State<DrawingScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
               children: [
-                // Color picker section
                 Expanded(
                   flex: 2,
                   child: SingleChildScrollView(
@@ -100,7 +99,6 @@ class _DrawingScreenState extends State<DrawingScreen> {
                     ),
                   ),
                 ),
-                // Stroke width slider section
                 Expanded(
                   flex: 1,
                   child: Slider(
