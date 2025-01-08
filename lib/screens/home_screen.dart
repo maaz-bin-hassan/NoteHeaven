@@ -203,7 +203,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           children: [
                             Icon(Icons.image, size: 20),
                             const SizedBox(width: 8),
-                            Text('Attach images & photos',
+                            Text('Attach images',
+                                style: Theme.of(context).textTheme.bodyMedium),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.color_lens, size: 20),
+                            const SizedBox(width: 8),
+                            Text('Change Colors',
                                 style: Theme.of(context).textTheme.bodyMedium),
                           ],
                         ),
