@@ -1,7 +1,6 @@
 plugins {
     id "com.android.application"
     id "kotlin-android"
-    id "com.google.gms.google-services"  // Add this line
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id "dev.flutter.flutter-gradle-plugin"
 }
@@ -48,13 +47,8 @@ flutter {
 }
 
 dependencies {
-    
-    // Add these lines for Firebase Authentication
-    implementation platform("com.google.firebase:firebase-bom:33.7.0")
-    implementation "com.google.firebase:firebase-auth"
-    implementation "com.google.android.gms:play-services-auth:21.3.0"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
 }
 
 apply plugin: "com.android.application"
 apply plugin: "kotlin-android"
-apply plugin: "com.google.gms.google-services"

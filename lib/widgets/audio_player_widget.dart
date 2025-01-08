@@ -58,6 +58,9 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final textColor = isDarkMode ? Colors.white : Colors.black87;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -66,7 +69,10 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
             Row(
               children: [
                 IconButton(
-                  icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
+                  icon: Icon(
+                    isPlaying ? Icons.pause : Icons.play_arrow,
+                    color: textColor,
+                  ),
                   onPressed: () async {
                     try {
                       if (isPlaying) {
@@ -122,11 +128,21 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
                           children: [
                             Text(
                               _formatDuration(_position),
-                              style: Theme.of(context).textTheme.bodySmall,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: textColor,
+                                  ),
                             ),
                             Text(
                               _formatDuration(_duration),
-                              style: Theme.of(context).textTheme.bodySmall,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: textColor,
+                                  ),
                             ),
                           ],
                         ),
@@ -135,7 +151,10 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.delete),
+                  icon: Icon(
+                    Icons.delete,
+                    color: textColor,
+                  ),
                   onPressed: () => widget.onDelete(),
                 ),
               ],

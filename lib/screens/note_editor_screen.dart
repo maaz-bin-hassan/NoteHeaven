@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -6,17 +7,24 @@ import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 import '../models/note.dart';
 import '../services/note_service.dart';
+import '../services/local_auth_service.dart';
 import '../widgets/drawing_canvas.dart';
 import '../services/audio_service.dart';
 import 'drawing_screen.dart';
 import '../widgets/audio_player_widget.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import '../services/auth_service.dart';
-import 'login_screen.dart';
+import '../widgets/image_preview.dart';
+import 'drawing_preview_screen.dart';
+import '../services/note_share_manager.dart';
 
 class NoteEditorScreen extends StatefulWidget {
   final Note? note;
-  const NoteEditorScreen({super.key, this.note});
+  final NoteService noteService; // Add this line
+
+  const NoteEditorScreen({
+    super.key,
+    this.note,
+    required this.noteService, // Add this line
+  });
 
   @override
   State<NoteEditorScreen> createState() => _NoteEditorScreenState();
@@ -29,7 +37,8 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   late TextEditingController _contentController;
   final List<String> _images = [];
   String _selectedColor = '#FFFFFF';
-  final _noteService = NoteService();
+  // Remove this line as we'll use widget.noteService instead
+  // final _noteService = NoteService();
   late AnimationController _colorPickerController;
   bool _isEdited = false;
   List<DrawingPoint> _drawings = [];
@@ -42,6 +51,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   Color _titleColor = Colors.black;
   Color _contentColor = Colors.black;
   bool _isDrawingVisible = false; // Add this property
+  final _shareManager = NoteShareManager(); // Add property
 
   @override
   void initState() {
@@ -50,6 +60,14 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     _contentController =
         TextEditingController(text: widget.note?.content ?? '');
     _selectedColor = widget.note?.color ?? '#FFFFFF';
+    _titleColor = widget.note?.titleColor ?? Colors.black;
+    _contentColor = widget.note?.contentColor ?? Colors.black;
+
+    // Initialize audio recordings from existing note
+    if (widget.note?.audioRecordings != null) {
+      _audioRecordings.addAll(widget.note!.audioRecordings);
+    }
+    // Initialize images from existing note
     if (widget.note?.images != null) {
       _images.addAll(widget.note!.images);
     }
@@ -216,17 +234,11 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     try {
       setState(() => _isSaving = true); // Set loading state
 
-      final userId = AuthService().currentUser?.uid;
-      if (userId == null) {
-        _showError('Not authenticated');
-        return;
-      }
-
       final note = Note(
-        id: widget.note?.id ?? '',
+        id: widget.note?.id ??
+            const Uuid().v4(), // Generate new UUID for new notes
         title: _titleController.text.trim(),
         content: _contentController.text.trim(),
-        userId: userId,
         timestamp: DateTime.now(),
         createdAt: widget.note?.createdAt ?? DateTime.now(),
         modifiedAt: DateTime.now(),
@@ -237,18 +249,23 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
         audioRecordings: _audioRecordings,
       );
 
+      debugPrint(
+          'Saving note with recordings: ${note.audioRecordings}'); // Debug log
+
       if (widget.note == null) {
-        await _noteService.addNote(note);
-        if (mounted)
+        await widget.noteService.addNote(note);
+        if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Note created successfully')),
           );
+        }
       } else {
-        await _noteService.updateNote(note);
-        if (mounted)
+        await widget.noteService.updateNote(note);
+        if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Note updated successfully')),
           );
+        }
       }
 
       if (mounted) {
@@ -283,7 +300,9 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
         setState(() {
           _audioRecordings.add(path);
           _isRecording = false;
+          _isEdited = true; // Mark as edited when recording is added
         });
+        debugPrint('Added recording: $path'); // Debug log
       }
     }
   }
@@ -306,12 +325,16 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   }
 
   void _toggleDrawingVisibility() {
-    setState(() {
-      _isDrawingVisible = !_isDrawingVisible;
-    });
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DrawingPreviewScreen(drawings: _drawings),
+      ),
+    );
   }
 
   Widget _buildAudioRecordings() {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -319,7 +342,10 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
           const SizedBox(height: 16),
           Text(
             'Recordings',
-            style: Theme.of(context).textTheme.titleMedium,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  // Use white text in dark mode
+                  color: isDarkMode ? Colors.white : Colors.black87,
+                ),
           ),
           const SizedBox(height: 8),
           ListView.builder(
@@ -435,327 +461,321 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   }
 
   Widget _buildMainContent(Color textColor) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _titleController,
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: _titleColor,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'Title',
-                  border: InputBorder.none,
-                  hintStyle: TextStyle(
-                    color: textColor.withOpacity(0.6),
-                  ),
-                ),
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.format_color_text),
-              onPressed: () => _showTextColorPicker(true),
-              tooltip: 'Change title color',
-            ),
-          ],
-        ),
-        if (_images.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          SizedBox(
-            height: 100,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: _images.length,
-              itemBuilder: (context, index) => _buildImageItem(index),
-            ),
-          ),
-        ],
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _contentController,
-                maxLines: null,
-                style: TextStyle(
-                  fontSize: 16,
-                  color: _contentColor,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'Start writing...',
-                  border: InputBorder.none,
-                  hintStyle: TextStyle(
-                    color: textColor.withOpacity(0.6),
-                  ),
-                ),
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.format_color_text),
-              onPressed: () => _showTextColorPicker(false),
-              tooltip: 'Change text color',
-            ),
-          ],
-        ),
-        if (_drawings.isNotEmpty) ...[
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Title section
           Row(
             children: [
-              Text(
-                'Drawing attached',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: textColor.withOpacity(0.7),
+              Expanded(
+                child: TextField(
+                  controller: _titleController,
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: _titleColor,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Title',
+                    border: InputBorder.none,
+                    hintStyle: TextStyle(
+                      color: textColor.withOpacity(0.6),
                     ),
-              ),
-              IconButton(
-                icon: Icon(
-                  _isDrawingVisible ? Icons.visibility_off : Icons.visibility,
-                  color: textColor.withOpacity(0.7),
+                  ),
                 ),
-                onPressed: _toggleDrawingVisibility,
-                tooltip: _isDrawingVisible ? 'Hide drawing' : 'Show drawing',
               ),
               IconButton(
-                icon: const Icon(Icons.edit),
-                onPressed: _openDrawingScreen,
-                tooltip: 'Edit drawing',
-                color: textColor.withOpacity(0.7),
+                icon: const Icon(
+                  Icons.format_color_text_rounded,
+                  color: Colors.black87,
+                ),
+                onPressed: () => _showTextColorPicker(true),
+                tooltip: 'Change title color',
               ),
             ],
           ),
-          if (_isDrawingVisible) ...[
-            const SizedBox(height: 8),
-            Container(
-              margin: const EdgeInsets.only(bottom: 16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: CustomPaint(
-                painter: DrawingDisplayPainter(points: _drawings),
-                size: const Size(double.infinity, 200),
+
+          // Images section
+          if (_images.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 100,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount: _images.length,
+                itemBuilder: (context, index) => _buildImageItem(index),
               ),
             ),
           ],
-        ],
-        if (_audioRecordings.isNotEmpty) ...[
+
           const SizedBox(height: 16),
-          Container(
-            margin: const EdgeInsets.only(bottom: 16),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Theme.of(context).cardColor,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: _buildAudioRecordings(),
-          ),
-        ],
-      ],
-    );
-  }
 
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final baseColor = Color(
-        int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000);
-    final backgroundColor = isDarkMode ? _getDarkerColor(baseColor) : baseColor;
-    final textColor = _getTextColor(context);
-
-    final actions = <Widget>[
-      if (widget.note != null)
-        IconButton(
-          icon: Icon(Icons.delete, color: textColor),
-          onPressed: () => _showDeleteConfirmation(context),
-          tooltip: 'Delete note',
-        ),
-      if (_isSaving)
-        const Padding(
-          padding: EdgeInsets.all(8.0),
-          child: SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-          ),
-        )
-      else
-        IconButton(
-          icon: Icon(Icons.save, color: textColor),
-          onPressed: _isSaving ? null : _saveNote, // Disable while saving
-          tooltip: 'Save note',
-        ),
-      IconButton(
-        icon: Icon(Icons.share, color: textColor),
-        onPressed: () {
-          HapticFeedback.lightImpact();
-          final text = '${_titleController.text}\n\n${_contentController.text}';
-          Share.share(text);
-        },
-        tooltip: 'Share note',
-      ),
-      IconButton(
-        icon: Icon(Icons.image, color: textColor),
-        onPressed: _pickImage,
-        tooltip: 'Add image',
-      ),
-      IconButton(
-        icon: Icon(Icons.color_lens, color: textColor),
-        onPressed: _showColorPicker,
-        tooltip: 'Change color',
-      ),
-      IconButton(
-        icon: const Icon(Icons.logout),
-        onPressed: () async {
-          await AuthService().signOut();
-          if (mounted) {
-            Navigator.of(context).pushAndRemoveUntil(
-              MaterialPageRoute(builder: (context) => LoginScreen()),
-              (route) => false,
-            );
-          }
-        },
-        tooltip: 'Sign out',
-      ),
-    ];
-
-    return WillPopScope(
-      onWillPop: _onWillPop,
-      child: Scaffold(
-        backgroundColor: backgroundColor,
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          iconTheme: IconThemeData(color: textColor),
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () async {
-              if (await _onWillPop()) {
-                Navigator.pop(context);
-              }
-            },
-          ),
-          actions: actions,
-        ),
-        body: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                backgroundColor,
-                backgroundColor.withOpacity(0.8),
-              ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: _buildMainContent(textColor),
-          ),
-        ),
-        bottomNavigationBar: BottomAppBar(
-          color: Theme.of(context).brightness == Brightness.dark
-              ? Theme.of(context).colorScheme.surface
-              : null,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          // Content section
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              IconButton(
-                icon: const Icon(Icons.draw),
-                onPressed: _openDrawingScreen,
-                tooltip: 'Open drawing canvas',
-                color: Theme.of(context).colorScheme.primary,
+              Expanded(
+                child: TextField(
+                  controller: _contentController,
+                  maxLines: null,
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: _contentColor,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Start writing...',
+                    border: InputBorder.none,
+                    hintStyle: TextStyle(
+                      color: textColor.withOpacity(0.6),
+                    ),
+                  ),
+                ),
               ),
               IconButton(
-                icon: Icon(_isRecording ? Icons.stop : Icons.mic),
-                onPressed: _toggleRecording,
-                color: _isRecording
-                    ? Colors.red
-                    : Theme.of(context).colorScheme.primary,
-                tooltip: _isRecording ? 'Stop recording' : 'Start recording',
+                icon: const Icon(
+                  Icons.format_color_text_rounded,
+                  color: Colors.black87,
+                ),
+                onPressed: () => _showTextColorPicker(false),
+                tooltip: 'Change text color',
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
 
-  void _showDeleteConfirmation(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Note'),
-        content: const Text('Are you sure you want to delete this note?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () async {
-              try {
-                await _noteService.deleteNote(widget.note!.id);
-                if (mounted) {
-                  Navigator.pop(context); // Close dialog
-                  Navigator.pop(context); // Return to home screen
-                }
-              } catch (e) {
-                if (mounted) {
-                  _showError('Failed to delete note: ${e.toString()}');
-                }
-              }
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
+          // Drawings section - simplified
+          if (_drawings.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Text(
+                  'Drawing attached',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Colors.black87,
+                      ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.visibility_rounded,
+                      color: Colors.black87),
+                  onPressed: _toggleDrawingVisibility,
+                  tooltip: 'View drawing',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.edit_rounded, color: Colors.black87),
+                  onPressed: _openDrawingScreen,
+                  tooltip: 'Edit drawing',
+                ),
+              ],
+            ),
+          ],
+
+          // Audio recordings section
+          if (_audioRecordings.isNotEmpty) _buildAudioRecordings(),
         ],
       ),
     );
   }
 
   Widget _buildImageItem(int index) {
-    return Stack(
-      children: [
-        Container(
-          margin: const EdgeInsets.only(right: 8),
-          width: 100,
-          height: 100,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            image: DecorationImage(
-              image: FileImage(File(_images[index])),
-              fit: BoxFit.cover,
-            ),
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ImagePreview(imagePath: _images[index]),
+          ),
+        );
+      },
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        width: 100,
+        height: 100,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          image: DecorationImage(
+            image: FileImage(File(_images[index])),
+            fit: BoxFit.cover,
           ),
         ),
-        Positioned(
-          top: 4,
-          right: 12,
-          child: IconButton(
-            icon: const Icon(Icons.close, color: Colors.white),
-            onPressed: () {
-              setState(() {
-                _images.removeAt(index);
-                _isEdited = true;
-              });
-            },
-          ),
-        ),
-      ],
+      ),
     );
   }
 
+  Future<void> _showDeleteDialog() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Note'),
+        content: const Text('Are you sure you want to delete this note?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.red,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true && mounted) {
+      try {
+        await widget.noteService.deleteNote(widget.note!.id);
+        if (mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Note deleted successfully')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          _showError('Failed to delete note: ${e.toString()}');
+        }
+      }
+    }
+  }
+
+  Future<void> _shareWithNearby() async {
+    if (_titleController.text.isEmpty) {
+      _showError('Please add a title before sharing');
+      return;
+    }
+
+    try {
+      setState(() => _isSaving = true);
+
+      final note = Note(
+        id: widget.note?.id ?? const Uuid().v4(),
+        title: _titleController.text.trim(),
+        content: _contentController.text.trim(),
+        timestamp: DateTime.now(),
+        createdAt: widget.note?.createdAt ?? DateTime.now(),
+        modifiedAt: DateTime.now(),
+        images: _images,
+        color: _selectedColor,
+        titleColor: _titleColor,
+        contentColor: _contentColor,
+        audioRecordings: _audioRecordings,
+      );
+
+      await _shareManager.shareNote(note);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Note shared with nearby devices')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        _showError('Failed to share note: ${e.toString()}');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
+    }
+  }
+
   @override
-  void dispose() {
-    _titleController.dispose();
-    _contentController.dispose();
-    _colorPickerController.dispose();
-    _audioService.dispose();
-    super.dispose();
+  Widget build(BuildContext context) {
+    final textColor = _getTextColor(context);
+    final backgroundColor = Color(
+        int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000);
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return WillPopScope(
+      onWillPop: _onWillPop,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Note'),
+          actions: [
+            // Change the icon to wifi_tethering or share_arrival_time
+            IconButton(
+              icon:
+                  const Icon(Icons.wifi_tethering), // Changed from nearby_share
+              onPressed: _shareWithNearby,
+              tooltip: 'Share with nearby devices',
+            ),
+            if (widget.note != null) // Only show delete for existing notes
+              IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: _showDeleteDialog,
+                tooltip: 'Delete note',
+              ),
+            IconButton(
+              icon: const Icon(Icons.save),
+              onPressed: _isSaving ? null : _saveNote,
+            ),
+            IconButton(
+              icon: const Icon(Icons.share),
+              onPressed: () {
+                final text =
+                    '${_titleController.text}\n\n${_contentController.text}';
+                Share.share(text);
+              },
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: Container(
+            color: backgroundColor,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: _buildMainContent(textColor),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.add_photo_alternate_rounded),
+                          onPressed: _pickImage,
+                          color: Colors.black87, // Fixed color
+                          tooltip: 'Add Image',
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.color_lens_rounded),
+                          onPressed: _showColorPicker,
+                          color: Colors.black87, // Fixed color
+                          tooltip: 'Change Note Color',
+                        ),
+                        IconButton(
+                          icon: Icon(
+                            _isRecording
+                                ? Icons.stop_rounded
+                                : Icons.mic_rounded,
+                            color: _isRecording
+                                ? Colors.red
+                                : Colors
+                                    .black87, // Fixed color except when recording
+                          ),
+                          onPressed: _toggleRecording,
+                          tooltip:
+                              _isRecording ? 'Stop Recording' : 'Record Audio',
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.draw_rounded),
+                          onPressed: _openDrawingScreen,
+                          color: Colors.black87, // Fixed color
+                          tooltip: 'Add Drawing',
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

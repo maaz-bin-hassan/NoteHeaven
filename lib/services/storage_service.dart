@@ -1,123 +1,60 @@
 import 'dart:io';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:flutter/foundation.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
 class StorageService {
-  final FirebaseStorage _storage = FirebaseStorage.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  static final StorageService _instance = StorageService._internal();
+  factory StorageService() => _instance;
+  StorageService._internal();
 
-  Future<String?> uploadImage(File file) async {
+  Future<String?> uploadFile(File file, String directory) async {
     try {
       if (!await file.exists()) {
         debugPrint('File does not exist: ${file.path}');
         return null;
       }
 
-      final user = _auth.currentUser;
-      if (user == null) {
-        throw Exception('User not authenticated');
+      final appDir = await getApplicationDocumentsDirectory();
+      final storageDir = Directory('${appDir.path}/$directory');
+
+      if (!await storageDir.exists()) {
+        await storageDir.create(recursive: true);
       }
 
       final String fileName =
-          'users/${user.uid}/images/${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
-      final Reference ref = _storage.ref().child(fileName);
+          '${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
+      final String newPath = path.join(storageDir.path, fileName);
 
-      final metadata = SettableMetadata(
-        contentType: 'image/${path.extension(file.path).replaceFirst('.', '')}',
-        customMetadata: {
-          'userId': user.uid,
-          'timestamp': DateTime.now().toIso8601String(),
-        },
-      );
+      // Copy file to app storage
+      final File newFile = await file.copy(newPath);
+      debugPrint('File saved locally: ${newFile.path}');
 
-      // Create upload task
-      final UploadTask uploadTask = ref.putFile(file, metadata);
-
-      // Listen to upload progress
-      uploadTask.snapshotEvents.listen(
-        (TaskSnapshot snapshot) {
-          final progress =
-              (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          debugPrint('Upload progress: ${progress.toStringAsFixed(2)}%');
-        },
-        onError: (e) {
-          debugPrint('Upload error: $e');
-        },
-      );
-
-      // Wait for upload to complete
-      final TaskSnapshot snapshot = await uploadTask;
-      final String downloadUrl = await snapshot.ref.getDownloadURL();
-      debugPrint('File uploaded successfully: $downloadUrl');
-      return downloadUrl;
+      return newFile.path;
     } catch (e, stackTrace) {
-      debugPrint('Error uploading file: $e');
+      debugPrint('Error saving file: $e');
       debugPrint('Stack trace: $stackTrace');
       return null;
     }
+  }
+
+  Future<void> deleteFile(String filePath) async {
+    try {
+      final file = File(filePath);
+      if (await file.exists()) {
+        await file.delete();
+        debugPrint('File deleted successfully: $filePath');
+      }
+    } catch (e) {
+      debugPrint('Error deleting file: $e');
+    }
+  }
+
+  Future<String?> uploadImage(File file) async {
+    return uploadFile(file, 'images');
   }
 
   Future<String?> uploadAudio(File file) async {
-    try {
-      if (!await file.exists()) {
-        debugPrint('Audio file does not exist: ${file.path}');
-        return null;
-      }
-
-      final user = _auth.currentUser;
-      if (user == null) {
-        throw Exception('User not authenticated');
-      }
-
-      final String fileName =
-          'users/${user.uid}/audio/${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
-      final Reference ref = _storage.ref().child(fileName);
-
-      final metadata = SettableMetadata(
-        contentType: 'audio/m4a',
-        customMetadata: {
-          'userId': user.uid,
-          'timestamp': DateTime.now().toIso8601String(),
-        },
-      );
-
-      final UploadTask uploadTask = ref.putFile(file, metadata);
-
-      // Monitor upload progress
-      uploadTask.snapshotEvents.listen(
-        (TaskSnapshot snapshot) {
-          final progress =
-              (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          debugPrint('Upload progress: ${progress.toStringAsFixed(2)}%');
-        },
-        onError: (e) {
-          debugPrint('Upload error: $e');
-        },
-      );
-
-      final TaskSnapshot snapshot = await uploadTask;
-      final String downloadUrl = await snapshot.ref.getDownloadURL();
-      debugPrint('Audio uploaded successfully: $downloadUrl');
-      return downloadUrl;
-    } catch (e, stackTrace) {
-      debugPrint('Error uploading audio: $e');
-      debugPrint('Stack trace: $stackTrace');
-      return null;
-    }
-  }
-
-  Future<void> deleteFile(String url) async {
-    try {
-      if (url.isEmpty) return;
-
-      final ref = _storage.refFromURL(url);
-      await ref.delete();
-      debugPrint('File deleted successfully: $url');
-    } catch (e) {
-      debugPrint('Error deleting file: $e');
-      // Don't rethrow - just log the error
-    }
+    return uploadFile(file, 'audio');
   }
 }

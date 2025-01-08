@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/note.dart';
 import 'note_editor_screen.dart';
 import '../services/note_service.dart';
+import '../services/local_auth_service.dart';
 import '../utils/animations.dart';
+import 'search_screen.dart'; // Add this import
+import '../services/note_share_manager.dart'; // Add import
 
 class HomeScreen extends StatefulWidget {
   final Function() onThemeToggle;
@@ -22,6 +26,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
+  final _authService = LocalAuthService();
+  final _shareManager = NoteShareManager(); // Add this line
   late AnimationController _fabController;
 
   @override
@@ -31,6 +37,65 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       vsync: this,
       duration: const Duration(milliseconds: 300),
     );
+    _initializeSharing(); // Add this line
+  }
+
+  Future<void> _initializeSharing() async {
+    await _shareManager.initialize();
+
+    _shareManager.receivedNotes.listen((note) {
+      _showNoteReceiveDialog(note);
+    });
+  }
+
+  Future<void> _showNoteReceiveDialog(Note note) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Receive Note'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Someone wants to share a note:'),
+            const SizedBox(height: 8),
+            Text(
+              note.title,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              note.content,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Decline'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true && mounted) {
+      try {
+        await widget.noteService.addNote(note);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Note received and saved')),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save received note: $e')),
+        );
+      }
+    }
   }
 
   @override
@@ -191,7 +256,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                     curve: Curves.easeOut),
                               ),
                             ),
-                            child: NoteCard(note: snapshot.data![index]),
+                            child: NoteCard(
+                              note: snapshot.data![index],
+                              noteService:
+                                  widget.noteService, // Pass the noteService
+                            ),
                           );
                         },
                       )
@@ -206,50 +275,64 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'NoteHeaven ',
+              'NoteHeaven',
               style: TextStyle(
                 fontWeight: FontWeight.bold,
+                fontSize: 24,
                 color: Theme.of(context).colorScheme.primary,
               ),
             ),
-            const Text('✨',
-                style: TextStyle(fontSize: 20)), // Changed to sparkles
+            const SizedBox(width: 8),
+            const Icon(
+              Icons.auto_awesome,
+              color: Colors.amber, // Changed from secondary color to amber
+              size: 20,
+            ),
           ],
         ),
         actions: [
           IconButton(
             icon: Icon(
-              isDark ? Icons.light_mode : Icons.dark_mode,
+              isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            onPressed: widget.onThemeToggle,
+            tooltip: isDark ? 'Switch to light mode' : 'Switch to dark mode',
+          ),
+          IconButton(
+            icon: Icon(
+              Icons.search_rounded,
               color: Theme.of(context).colorScheme.primary,
             ),
             onPressed: () {
-              widget.onThemeToggle();
-              HapticFeedback.lightImpact();
-              debugPrint(
-                  'Theme toggle pressed, isDark: $isDark'); // Add debug print
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => SearchScreen(
+                    noteService: widget.noteService,
+                  ),
+                ),
+              );
             },
-            tooltip: isDark ? 'Switch to light mode' : 'Switch to dark mode',
+            tooltip: 'Search notes',
           ),
         ],
         backgroundColor: Colors.transparent,
         elevation: 0,
       ),
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: FloatingActionButton(
         onPressed: () {
           _fabController.forward(from: 0);
           Navigator.push(
             context,
-            CustomPageRoute(child: const NoteEditorScreen()),
+            CustomPageRoute(
+              child: NoteEditorScreen(noteService: widget.noteService),
+            ),
           );
         },
-        label: Row(
-          children: [
-            const Icon(Icons.add),
-            const SizedBox(width: 8),
-            const Text('New Note'),
-          ],
-        ),
-        tooltip: 'Create note',
+        child: const Icon(Icons.add_rounded),
+        backgroundColor: Theme.of(context).colorScheme.primary,
+        foregroundColor: Colors.white,
       ),
     );
   }
@@ -257,14 +340,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   @override
   void dispose() {
     _fabController.dispose();
+    _shareManager.dispose(); // Add this line
     super.dispose();
   }
 }
 
 class NoteCard extends StatelessWidget {
   final Note note;
+  final NoteService noteService; // Add this line
 
-  const NoteCard({super.key, required this.note});
+  const NoteCard({
+    super.key,
+    required this.note,
+    required this.noteService, // Add this line
+  });
 
   Color _getDarkerColor(Color baseColor) {
     final HSLColor hsl = HSLColor.fromColor(baseColor);
@@ -292,52 +381,60 @@ class NoteCard extends StatelessWidget {
     return Hero(
       tag: 'note-${note.id}',
       child: Material(
-        child: InkWell(
-          onTap: () {
-            HapticFeedback.lightImpact();
-            Navigator.push(
-              context,
-              CustomPageRoute(
-                child: NoteEditorScreen(note: note),
+        child: Container(
+          decoration: BoxDecoration(
+            color: cardColor,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Theme.of(context).shadowColor.withOpacity(0.1),
+                blurRadius: 8,
+                offset: const Offset(0, 4),
               ),
-            );
-          },
-          borderRadius: BorderRadius.circular(12),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            decoration: BoxDecoration(
-              color: cardColor,
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(isDarkMode ? 0.3 : 0.1),
-                  blurRadius: 4,
-                  offset: const Offset(0, 2),
+            ],
+          ),
+          child: InkWell(
+            onTap: () {
+              HapticFeedback.lightImpact();
+              Navigator.push(
+                context,
+                CustomPageRoute(
+                  child: NoteEditorScreen(
+                    note: note,
+                    noteService: noteService,
+                  ),
                 ),
-              ],
-            ),
+              );
+            },
+            borderRadius: BorderRadius.circular(16),
             child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    note.title,
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: textColor,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _formatDate(note.createdAt),
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: textColor.withOpacity(0.6),
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          note.title,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: textColor,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Text(
+                        _formatDate(note.createdAt),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: textColor.withOpacity(0.6),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 8),
                   Expanded(
@@ -352,27 +449,37 @@ class NoteCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      if (note.images.isNotEmpty)
-                        Icon(Icons.image,
-                            size: 16, color: textColor.withOpacity(0.6)),
-                      if (note.images.isNotEmpty) const SizedBox(width: 4),
-                      if (note.audioRecordings.isNotEmpty)
-                        Icon(Icons.mic,
-                            size: 16, color: textColor.withOpacity(0.6)),
-                      if (note.audioRecordings.isNotEmpty)
-                        const SizedBox(width: 4),
-                      if (note.images.isNotEmpty ||
-                          note.audioRecordings.isNotEmpty)
-                        Text(
-                          _getAttachmentsCount(),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: textColor.withOpacity(0.6),
+                  // Wrap the Row with a SizedBox to constrain width
+                  SizedBox(
+                    width: double.infinity,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min, // Add this
+                      children: [
+                        if (note.images.isNotEmpty) ...[
+                          Icon(Icons.image,
+                              size: 16, color: textColor.withOpacity(0.6)),
+                          const SizedBox(width: 4),
+                        ],
+                        if (note.audioRecordings.isNotEmpty) ...[
+                          Icon(Icons.mic,
+                              size: 16, color: textColor.withOpacity(0.6)),
+                          const SizedBox(width: 4),
+                        ],
+                        if (note.images.isNotEmpty ||
+                            note.audioRecordings.isNotEmpty)
+                          Flexible(
+                            // Wrap text with Flexible
+                            child: Text(
+                              _getAttachmentsCount(),
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: textColor.withOpacity(0.6),
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
-                    ],
+                      ],
+                    ),
                   ),
                 ],
               ),
