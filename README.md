@@ -1,4 +1,4 @@
-# sharingnotes
+# NoteHeaven
 
 A new Flutter project.
 
