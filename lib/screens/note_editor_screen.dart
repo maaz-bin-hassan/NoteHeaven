@@ -461,6 +461,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   }
 
   Widget _buildMainContent(Color textColor) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -486,9 +487,9 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                 ),
               ),
               IconButton(
-                icon: const Icon(
+                icon: Icon(
                   Icons.format_color_text_rounded,
-                  color: Colors.black87,
+                  color: isDarkMode ? Colors.white : Colors.black87,
                 ),
                 onPressed: () => _showTextColorPicker(true),
                 tooltip: 'Change title color',
@@ -533,9 +534,9 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                 ),
               ),
               IconButton(
-                icon: const Icon(
+                icon: Icon(
                   Icons.format_color_text_rounded,
-                  color: Colors.black87,
+                  color: isDarkMode ? Colors.white : Colors.black87,
                 ),
                 onPressed: () => _showTextColorPicker(false),
                 tooltip: 'Change text color',
@@ -683,9 +684,11 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   @override
   Widget build(BuildContext context) {
     final textColor = _getTextColor(context);
-    final backgroundColor = Color(
-        int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000);
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final backgroundColor = isDarkMode
+        ? Theme.of(context).colorScheme.background
+        : Color(
+            int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000);
 
     return WillPopScope(
       onWillPop: _onWillPop,
@@ -738,13 +741,13 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                         IconButton(
                           icon: const Icon(Icons.add_photo_alternate_rounded),
                           onPressed: _pickImage,
-                          color: Colors.black87, // Fixed color
+                          color: isDarkMode ? Colors.white : Colors.black87,
                           tooltip: 'Add Image',
                         ),
                         IconButton(
                           icon: const Icon(Icons.color_lens_rounded),
                           onPressed: _showColorPicker,
-                          color: Colors.black87, // Fixed color
+                          color: isDarkMode ? Colors.white : Colors.black87,
                           tooltip: 'Change Note Color',
                         ),
                         IconButton(
@@ -754,8 +757,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                                 : Icons.mic_rounded,
                             color: _isRecording
                                 ? Colors.red
-                                : Colors
-                                    .black87, // Fixed color except when recording
+                                : (isDarkMode ? Colors.white : Colors.black87),
                           ),
                           onPressed: _toggleRecording,
                           tooltip:
@@ -764,7 +766,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                         IconButton(
                           icon: const Icon(Icons.draw_rounded),
                           onPressed: _openDrawingScreen,
-                          color: Colors.black87, // Fixed color
+                          color: isDarkMode ? Colors.white : Colors.black87,
                           tooltip: 'Add Drawing',
                         ),
                       ],
