@@ -15,6 +15,8 @@ import '../widgets/image_preview.dart';
 import 'drawing_preview_screen.dart';
 import '../services/note_share_manager.dart';
 import 'package:flutter/foundation.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class NoteEditorScreen extends StatefulWidget {
   final Note? note;
@@ -51,6 +53,15 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   bool _isDrawingVisible = false;
   final _shareManager = NoteShareManager();
 
+  late GenerativeModel _aiModel;
+  bool _isAiProcessing = false;
+  final TextEditingController _promptController = TextEditingController();
+
+  // Add these new properties at the top with other state variables
+  bool _hasAiContent = false;
+  int _aiContentStartIndex = -1;
+  int _aiContentEndIndex = -1;
+
   @override
   void initState() {
     super.initState();
@@ -77,6 +88,15 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
 
     _titleController.addListener(_markAsEdited);
     _contentController.addListener(_markAsEdited);
+
+    _initAiModel();
+  }
+
+  void _initAiModel() {
+    _aiModel = GenerativeModel(
+      model: 'gemini-pro',
+      apiKey: '${dotenv.env["APIKEY"]}',
+    );
   }
 
   void _markAsEdited() {
@@ -538,6 +558,13 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                           : textColor.withOpacity(0.6),
                     ),
                   ),
+                  onChanged: (value) {
+                    _markAsEdited();
+                    // Check for command prefix
+                    if (value.endsWith('/')) {
+                      _showAiPromptDialog();
+                    }
+                  },
                 ),
               ),
               IconButton(
@@ -689,6 +716,95 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     }
   }
 
+  Future<void> _processAiCommand(String prompt) async {
+    if (prompt.isEmpty) return;
+
+    setState(() => _isAiProcessing = true);
+    try {
+      final currentText = _contentController.text;
+      final content = [Content.text('$prompt\n\nContext: $currentText')];
+
+      final response = await _aiModel.generateContent(content);
+      if (response.text != null && mounted) {
+        setState(() {
+          if (_hasAiContent &&
+              _aiContentStartIndex >= 0 &&
+              _aiContentEndIndex >= 0) {
+            // Replace existing AI content
+            final beforeAi =
+                _contentController.text.substring(0, _aiContentStartIndex);
+            final afterAi =
+                _contentController.text.substring(_aiContentEndIndex);
+            _contentController.text = beforeAi +
+                '\n\n[AI Response]\n' +
+                response.text! +
+                '\n[End AI Response]\n' +
+                afterAi;
+          } else {
+            // Add new AI content
+            _aiContentStartIndex = _contentController.text.length;
+            _contentController.text +=
+                '\n\n[AI Response]\n' + response.text! + '\n[End AI Response]';
+            _aiContentEndIndex = _contentController.text.length;
+            _hasAiContent = true;
+          }
+          _isEdited = true;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        _showError('AI processing failed: ${e.toString()}');
+      }
+    } finally {
+      setState(() => _isAiProcessing = false);
+    }
+  }
+
+  void _showAiPromptDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const Text('Chat with AI'),
+            if (_hasAiContent) ...[
+              const SizedBox(width: 8),
+              Text(
+                '()',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.grey,
+                    ),
+              ),
+            ],
+          ],
+        ),
+        content: TextField(
+          controller: _promptController,
+          decoration: InputDecoration(
+            hintText: _hasAiContent
+                ? 'Enter prompt...'
+                : '(e.g., "explain this note")',
+          ),
+          maxLines: 3,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _processAiCommand(_promptController.text);
+              _promptController.clear();
+            },
+            child: Text(_hasAiContent ? 'Rewrite' : 'Send'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final textColor = _getTextColor(context);
@@ -704,6 +820,37 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
         appBar: AppBar(
           title: const Text('Note'),
           actions: [
+            if (_isAiProcessing)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16.0),
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              ),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child: ElevatedButton.icon(
+                icon: const Text(
+                  'AI',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                label: const Icon(Icons.auto_awesome, size: 18),
+                onPressed: _showAiPromptDialog,
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+              ),
+            ),
             IconButton(
               icon: const Icon(Icons.wifi_tethering),
               onPressed: _shareWithNearby,
@@ -785,5 +932,14 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _promptController.dispose();
+    _titleController.dispose();
+    _contentController.dispose();
+    _colorPickerController.dispose();
+    super.dispose();
   }
 }

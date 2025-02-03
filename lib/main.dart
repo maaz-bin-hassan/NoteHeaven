@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'screens/home_screen.dart';
 import 'services/note_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
 
 extension BuildContextExtensions on BuildContext {
   _MyAppState? findAppState() {
@@ -12,8 +14,14 @@ extension BuildContextExtensions on BuildContext {
 }
 
 void main() async {
+  await dotenv.load(fileName: '.env');
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
+  final model =
+      GenerativeModel(model: 'gemini-pro', apiKey: '${dotenv.env["APIKEY"]}');
+  final content = [Content.text('explain my note topics.')];
+  final response = await model.generateContent(content);
+  print(response.text);
 }
 
 class MyApp extends StatefulWidget {

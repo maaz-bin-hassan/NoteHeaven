@@ -17,12 +17,14 @@ dependencies:
   image_picker: ^1.1.2
   record: ^5.0.1
   audioplayers: ^5.2.1
-  path_provider: ^2.1.2
+  path_provider: ^2.1.5
   permission_handler: ^11.0.1
   shared_preferences: ^2.3.5
   sqflite: ^2.3.2
   web_socket_channel: ^3.0.1
   network_info_plus: ^6.1.2
+  google_generative_ai: ^0.4.6
+  flutter_dotenv: ^5.2.1
 
 dev_dependencies:
   flutter_test:
@@ -37,6 +39,7 @@ flutter:
     - assets/images/logo.png
     - assets/fonts/Poppins/
     - assets/images/google_logo.png
+    - .env
 
   fonts:
     - family: Poppins
