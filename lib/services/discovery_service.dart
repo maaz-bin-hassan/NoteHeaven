@@ -11,6 +11,7 @@ class DiscoveryService {
   RawDatagramSocket? _socket;
   final _port = 4545;
   Timer? _broadcastTimer;
+  Timer? _cleanupTimer;
   bool _isRunning = false;
 
   final _discoveredPeers = <String, DateTime>{};
@@ -101,7 +102,8 @@ class DiscoveryService {
   }
 
   void _startPeerCleanup() {
-    Timer.periodic(const Duration(seconds: 5), (_) {
+    _cleanupTimer?.cancel();
+    _cleanupTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       final now = DateTime.now();
       _discoveredPeers.removeWhere((_, timestamp) {
         return now.difference(timestamp).inSeconds > 10;
@@ -150,6 +152,7 @@ class DiscoveryService {
 
   void dispose() {
     _broadcastTimer?.cancel();
+    _cleanupTimer?.cancel();
     _socket?.close();
     _peerController.close();
     _isRunning = false;

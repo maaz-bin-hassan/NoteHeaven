@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Peer-to-peer note sharing connects to other devices over plain WebSocket
+  (ws://) on the local network, so cleartext traffic must be permitted.
+  Android 9+ blocks cleartext by default. There is no domain to scope this to
+  (peers are raw LAN IPs), so cleartext is allowed app-wide. No remote/cloud
+  endpoints are contacted in cleartext — the only HTTPS endpoint is the
+  DeepSeek API.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

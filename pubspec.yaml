@@ -1,5 +1,5 @@
-name: flutter_application_1
-description: "A new Flutter project."
+name: noteheaven
+description: "NoteHeaven — a private, local-first note-taking app with images, voice, sketches, AI assist and peer-to-peer sharing."
 publish_to: 'none'
 
 version: 1.0.0+1
@@ -31,6 +31,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
@@ -38,8 +39,8 @@ flutter:
   assets:
     - assets/images/placeholder.png
     - assets/images/logo.png
-    - assets/fonts/Poppins/
     - assets/images/google_logo.png
+    - assets/fonts/Poppins/
     - .env
 
   fonts:
@@ -50,3 +51,12 @@ flutter:
           weight: 500
         - asset: assets/fonts/Poppins/Poppins-Bold.ttf
           weight: 700
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: false
+  image_path: "assets/images/logo.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/images/logo.png"
+  min_sdk_android: 24
+  remove_alpha_ios: false

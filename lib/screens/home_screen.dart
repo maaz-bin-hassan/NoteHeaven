@@ -1,71 +1,65 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/note.dart';
-import 'note_editor_screen.dart';
 import '../services/note_service.dart';
-import '../utils/animations.dart';
-import 'search_screen.dart';
 import '../services/note_share_manager.dart';
+import '../services/settings_controller.dart';
+import '../utils/animations.dart';
+import '../widgets/note_card.dart';
+import 'note_editor_screen.dart';
+import 'search_screen.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  final Function() onThemeToggle;
-  final bool isDarkMode;
   final NoteService noteService;
+  final SettingsController settings;
 
   const HomeScreen({
     super.key,
-    required this.onThemeToggle,
-    required this.isDarkMode,
     required this.noteService,
+    required this.settings,
   });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen> {
   final _shareManager = NoteShareManager();
-  late AnimationController _fabController;
 
   @override
   void initState() {
     super.initState();
-    _fabController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 300),
-    );
-    _initializeSharing();
+    _initSharing();
   }
 
-  Future<void> _initializeSharing() async {
-    await _shareManager.initialize();
-
-    _shareManager.receivedNotes.listen((note) {
-      _showNoteReceiveDialog(note);
-    });
+  Future<void> _initSharing() async {
+    try {
+      await _shareManager.initialize();
+      _shareManager.receivedNotes.listen(_onNoteReceived);
+    } catch (e) {
+      debugPrint('Sharing init failed: $e');
+    }
   }
 
-  Future<void> _showNoteReceiveDialog(Note note) async {
-    final result = await showDialog<bool>(
+  Future<void> _onNoteReceived(Note note) async {
+    if (!mounted) return;
+    final accept = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Receive Note'),
+        title: const Text('Incoming note'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Someone wants to share a note:'),
-            const SizedBox(height: 8),
-            Text(
-              note.title,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              note.content,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
+            const Text('A nearby device wants to share:'),
+            const SizedBox(height: 12),
+            Text(note.title,
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            if (note.content.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(note.content, maxLines: 3, overflow: TextOverflow.ellipsis),
+            ],
           ],
         ),
         actions: [
@@ -73,440 +67,330 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Decline'),
           ),
-          TextButton(
+          FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Accept'),
+            child: const Text('Save'),
           ),
         ],
       ),
     );
-
-    if (result == true && mounted) {
-      try {
-        await widget.noteService.addNote(note);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Note received and saved')),
-        );
-      } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save received note: $e')),
-        );
-      }
+    if (accept != true || !mounted) return;
+    try {
+      await widget.noteService.addNote(note);
+      _snack('Note saved');
+    } catch (e) {
+      _snack('Could not save the note');
     }
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _openEditor([Note? note]) async {
+    final result = await Navigator.push(
+      context,
+      CustomPageRoute(
+        child: NoteEditorScreen(note: note, noteService: widget.noteService),
+      ),
+    );
+    // The editor returns the note when it was deleted, so we can offer Undo.
+    if (result is Note && mounted) _showUndo(result);
+  }
+
+  void _showNoteActions(Note note) {
+    HapticFeedback.mediumImpact();
+    showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(note.isPinned
+                  ? Icons.push_pin_outlined
+                  : Icons.push_pin_rounded),
+              title: Text(note.isPinned ? 'Unpin' : 'Pin to top'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                widget.noteService.setPinned(note.id, !note.isPinned);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.open_in_full_rounded),
+              title: const Text('Open'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _openEditor(note);
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.delete_outline_rounded,
+                  color: Theme.of(sheetContext).colorScheme.error),
+              title: Text('Delete',
+                  style: TextStyle(
+                      color: Theme.of(sheetContext).colorScheme.error)),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _deleteWithUndo(note);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _deleteWithUndo(Note note) async {
+    await widget.noteService.removeNote(note.id);
+    if (mounted) _showUndo(note);
+  }
+
+  void _showUndo(Note note) {
+    var undone = false;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger
+        .showSnackBar(
+          SnackBar(
+            content: const Text('Note deleted'),
+            duration: const Duration(seconds: 4),
+            action: SnackBarAction(
+              label: 'Undo',
+              onPressed: () {
+                undone = true;
+                widget.noteService.addNote(note);
+              },
+            ),
+          ),
+        )
+        .closed
+        .then((_) {
+      if (!undone) widget.noteService.purgeNoteFiles(note);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = widget.isDarkMode;
-
+    final brightness = Theme.of(context).brightness;
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Theme.of(context).colorScheme.primary.withOpacity(0.05),
-              Theme.of(context).colorScheme.secondary.withOpacity(0.1),
-            ],
-          ),
-        ),
-        child: StreamBuilder<List<Note>>(
-          stream: widget.noteService.notesStream,
-          initialData: const [],
-          key: const PageStorageKey('notes_stream'),
-          builder: (context, snapshot) {
-            if (snapshot.hasError) {
-              debugPrint('Error loading notes: ${snapshot.error}');
-              return Center(
-                child: Text('Error loading notes: ${snapshot.error}'),
-              );
-            }
-
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Text(
-                      '📝',
-                      style: TextStyle(fontSize: 64),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Ready to take notes!',
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            color: Theme.of(context).colorScheme.primary,
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Your creative journey starts here',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onBackground
-                                .withOpacity(0.7),
-                          ),
-                    ),
-                  ],
-                ),
-              );
-            }
-
-            if (!snapshot.hasData || snapshot.data!.isEmpty) {
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Text(
-                      '✨',
-                      style: TextStyle(fontSize: 64),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Create Your First Note!',
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            color: Theme.of(context).colorScheme.primary,
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Your creative journey starts here',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onBackground
-                                .withOpacity(0.7),
-                          ),
-                    ),
-                    const SizedBox(height: 16),
-                    Column(
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.mic, size: 20),
-                            const SizedBox(width: 8),
-                            Text('Record voice notes',
-                                style: Theme.of(context).textTheme.bodyMedium),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.image, size: 20),
-                            const SizedBox(width: 8),
-                            Text('Attach images',
-                                style: Theme.of(context).textTheme.bodyMedium),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.color_lens, size: 20),
-                            const SizedBox(width: 8),
-                            Text('Change Colors',
-                                style: Theme.of(context).textTheme.bodyMedium),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.draw, size: 20),
-                            const SizedBox(width: 8),
-                            Text('Draw & sketch ideas',
-                                style: Theme.of(context).textTheme.bodyMedium),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-                    Text(
-                      'Tap the + button to get started',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                    ),
-                  ],
-                ),
-              );
-            }
-
-            return PageStorage(
-              bucket: PageStorageBucket(),
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                child: snapshot.hasData
-                    ? GridView.builder(
-                        key: const PageStorageKey('notes_grid'),
-                        padding: const EdgeInsets.all(16),
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 2,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
-                        ),
-                        itemCount: snapshot.data!.length,
-                        itemBuilder: (context, index) {
-                          return FadeScaleTransition(
-                            animation:
-                                Tween<double>(begin: 0.0, end: 1.0).animate(
-                              CurvedAnimation(
-                                parent: ModalRoute.of(context)!.animation!,
-                                curve: Interval((index * 0.1).clamp(0, 1), 1.0,
-                                    curve: Curves.easeOut),
-                              ),
-                            ),
-                            child: NoteCard(
-                              note: snapshot.data![index],
-                              noteService: widget.noteService,
-                            ),
-                          );
-                        },
-                      )
-                    : const Center(child: CircularProgressIndicator()),
-              ),
-            );
-          },
-        ),
-      ),
       appBar: AppBar(
+        titleSpacing: 20,
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              'NoteHeaven',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 24,
-                color: Theme.of(context).colorScheme.primary,
-              ),
-            ),
-            const SizedBox(width: 8),
-            const Icon(
-              Icons.auto_awesome,
-              color: Colors.amber,
-              size: 20,
-            ),
+            const Text('NoteHeaven'),
+            const SizedBox(width: 6),
+            Icon(Icons.auto_awesome,
+                size: 18, color: Theme.of(context).colorScheme.primary),
           ],
         ),
         actions: [
           IconButton(
-            icon: Icon(
-              isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-              color: Theme.of(context).colorScheme.primary,
-            ),
-            onPressed: widget.onThemeToggle,
-            tooltip: isDark ? 'Switch to light mode' : 'Switch to dark mode',
+            icon: Icon(brightness == Brightness.dark
+                ? Icons.light_mode_rounded
+                : Icons.dark_mode_rounded),
+            tooltip: 'Toggle theme',
+            onPressed: () => widget.settings.toggle(brightness),
           ),
           IconButton(
-            icon: Icon(
-              Icons.search_rounded,
-              color: Theme.of(context).colorScheme.primary,
+            icon: const Icon(Icons.search_rounded),
+            tooltip: 'Search',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) =>
+                    SearchScreen(noteService: widget.noteService),
+              ),
             ),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => SearchScreen(
-                    noteService: widget.noteService,
-                  ),
-                ),
-              );
-            },
-            tooltip: 'Search notes',
           ),
-        ],
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          _fabController.forward(from: 0);
-          Navigator.push(
-            context,
-            CustomPageRoute(
-              child: NoteEditorScreen(noteService: widget.noteService),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Settings',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => SettingsScreen(settings: widget.settings),
+              ),
             ),
+          ),
+          const SizedBox(width: 4),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _openEditor(),
+        icon: const Icon(Icons.add_rounded),
+        label: const Text('New note'),
+      ),
+      body: StreamBuilder<List<Note>>(
+        stream: widget.noteService.notesStream,
+        initialData: widget.noteService.notes,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return _ErrorState(error: snapshot.error.toString());
+          }
+          final notes = snapshot.data ?? const <Note>[];
+          if (snapshot.connectionState == ConnectionState.waiting &&
+              notes.isEmpty) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (notes.isEmpty) return const _EmptyState();
+          return _NotesMasonry(
+            notes: notes,
+            onTap: _openEditor,
+            onLongPress: _showNoteActions,
           );
         },
-        child: const Icon(Icons.add_rounded),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
       ),
     );
   }
 
   @override
   void dispose() {
-    _fabController.dispose();
     _shareManager.dispose();
     super.dispose();
   }
 }
 
-class NoteCard extends StatelessWidget {
-  final Note note;
-  final NoteService noteService;
+/// Order-preserving masonry: notes are dealt across 2–4 columns based on width.
+class _NotesMasonry extends StatelessWidget {
+  final List<Note> notes;
+  final void Function(Note) onTap;
+  final void Function(Note) onLongPress;
 
-  const NoteCard({
-    super.key,
-    required this.note,
-    required this.noteService,
+  const _NotesMasonry({
+    required this.notes,
+    required this.onTap,
+    required this.onLongPress,
   });
-
-  Color _getDarkerColor(Color baseColor) {
-    final HSLColor hsl = HSLColor.fromColor(baseColor);
-    return hsl.withLightness((hsl.lightness * 0.8).clamp(0.0, 1.0)).toColor();
-  }
-
-  Color _getContrastingTextColor(Color backgroundColor) {
-    double luminance = backgroundColor.computeLuminance();
-
-    return luminance > 0.5 ? Colors.black : Colors.white;
-  }
 
   @override
   Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final baseColor =
-        Color(int.parse(note.color.substring(1, 7), radix: 16) + 0xFF000000);
-    final cardColor = isDarkMode ? _getDarkerColor(baseColor) : baseColor;
-    final textColor = _getContrastingTextColor(cardColor);
-
-    return Hero(
-      tag: 'note-${note.id}',
-      child: Material(
-        child: Container(
-          decoration: BoxDecoration(
-            color: cardColor,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: Theme.of(context).shadowColor.withOpacity(0.1),
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: InkWell(
-            onTap: () {
-              HapticFeedback.lightImpact();
-              Navigator.push(
-                context,
-                CustomPageRoute(
-                  child: NoteEditorScreen(
-                    note: note,
-                    noteService: noteService,
-                  ),
-                ),
-              );
-            },
-            borderRadius: BorderRadius.circular(16),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          note.title,
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: textColor,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      Text(
-                        _formatDate(note.createdAt),
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: textColor.withOpacity(0.6),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: Text(
-                      note.content,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: textColor.withOpacity(0.8),
-                      ),
-                      maxLines: 4,
-                      overflow: TextOverflow.fade,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (note.images.isNotEmpty) ...[
-                          Icon(Icons.image,
-                              size: 16, color: textColor.withOpacity(0.6)),
-                          const SizedBox(width: 4),
-                        ],
-                        if (note.audioRecordings.isNotEmpty) ...[
-                          Icon(Icons.mic,
-                              size: 16, color: textColor.withOpacity(0.6)),
-                          const SizedBox(width: 4),
-                        ],
-                        if (note.images.isNotEmpty ||
-                            note.audioRecordings.isNotEmpty)
-                          Flexible(
-                            child: Text(
-                              _getAttachmentsCount(),
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: textColor.withOpacity(0.6),
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columnCount = (constraints.maxWidth / 220).floor().clamp(2, 4);
+        final columns = List.generate(columnCount, (_) => <Widget>[]);
+        for (var i = 0; i < notes.length; i++) {
+          final note = notes[i];
+          columns[i % columnCount].add(
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: NoteCard(
+                note: note,
+                onTap: () => onTap(note),
+                onLongPress: () => onLongPress(note),
               ),
             ),
+          );
+        }
+        return SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (var c = 0; c < columnCount; c++) ...[
+                if (c > 0) const SizedBox(width: 12),
+                Expanded(child: Column(children: columns[c])),
+              ],
+            ],
           ),
+        );
+      },
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    const features = [
+      (Icons.mic_none_rounded, 'Record voice notes'),
+      (Icons.image_outlined, 'Attach images'),
+      (Icons.draw_outlined, 'Sketch ideas'),
+      (Icons.auto_awesome, 'Write with AI'),
+    ];
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 96,
+              height: 96,
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.edit_note_rounded,
+                  size: 52, color: scheme.onPrimaryContainer),
+            ),
+            const SizedBox(height: 24),
+            Text('Your first note awaits',
+                style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 8),
+            Text(
+              'Capture ideas, sketches, voice and more.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 28),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              alignment: WrapAlignment.center,
+              children: [
+                for (final (icon, label) in features)
+                  Chip(
+                    avatar: Icon(icon, size: 18),
+                    label: Text(label),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 28),
+            Text('Tap “New note” to begin',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.primary,
+                    )),
+          ],
         ),
       ),
     );
   }
+}
 
-  String _formatDate(DateTime date) {
-    final now = DateTime.now();
-    final difference = now.difference(date);
+class _ErrorState extends StatelessWidget {
+  final String error;
+  const _ErrorState({required this.error});
 
-    if (difference.inDays == 0) {
-      return 'Today';
-    } else if (difference.inDays == 1) {
-      return 'Yesterday';
-    } else if (difference.inDays < 7) {
-      return '${difference.inDays} days ago';
-    } else {
-      return '${date.day}/${date.month}/${date.year}';
-    }
-  }
-
-  String _getAttachmentsCount() {
-    final total = note.images.length + note.audioRecordings.length;
-    return '$total attachment${total > 1 ? 's' : ''}';
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline_rounded,
+                size: 48, color: Theme.of(context).colorScheme.error),
+            const SizedBox(height: 16),
+            Text('Couldn’t load your notes',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(error,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
+      ),
+    );
   }
 }

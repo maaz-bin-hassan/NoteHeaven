@@ -1,9 +1,9 @@
+import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:uuid/uuid.dart';
 import '../models/note.dart';
 
 class DatabaseHelper {
@@ -11,6 +11,7 @@ class DatabaseHelper {
   factory DatabaseHelper() => _instance;
   DatabaseHelper._internal();
 
+  static const _dbVersion = 2;
   static Database? _database;
 
   Future<Database> get database async {
@@ -19,196 +20,191 @@ class DatabaseHelper {
   }
 
   Future<Database> _initDatabase() async {
-    final Directory documentsDirectory =
-        await getApplicationDocumentsDirectory();
-    final String path = join(documentsDirectory.path, 'notes.db');
+    final documentsDirectory = await getApplicationDocumentsDirectory();
+    final path = join(documentsDirectory.path, 'notes.db');
 
-    return await openDatabase(
+    return openDatabase(
       path,
-      version: 1,
-      onCreate: (Database db, int version) async {
+      version: _dbVersion,
+      onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE notes(
             id TEXT PRIMARY KEY,
             title TEXT,
             content TEXT,
-            timestamp TEXT,
             createdAt TEXT,
             modifiedAt TEXT,
             color TEXT,
             titleColor INTEGER,
             contentColor INTEGER,
             images TEXT,
-            audioRecordings TEXT
+            audioRecordings TEXT,
+            drawings TEXT,
+            isPinned INTEGER DEFAULT 0
           )
         ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await _addColumnIfMissing(db, 'drawings', 'TEXT');
+          await _addColumnIfMissing(db, 'isPinned', 'INTEGER DEFAULT 0');
+        }
       },
     );
   }
 
-  Future<String> copyFileToLocalStorage(File file, String directory) async {
-    final String fileName = basename(file.path);
-    final Directory appDir = await getApplicationDocumentsDirectory();
-    final String newPath = join(appDir.path, directory, fileName);
-
-    // Create directory if it doesn't exist
-    final Directory newDir = Directory(dirname(newPath));
-    if (!await newDir.exists()) {
-      await newDir.create(recursive: true);
+  Future<void> _addColumnIfMissing(
+      Database db, String column, String type) async {
+    final info = await db.rawQuery('PRAGMA table_info(notes)');
+    final exists = info.any((row) => row['name'] == column);
+    if (!exists) {
+      await db.execute('ALTER TABLE notes ADD COLUMN $column $type');
     }
+  }
 
+  Future<String> _appDirPath() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return dir.path;
+  }
+
+  Future<String> copyFileToLocalStorage(File file, String subDir) async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final targetDir = Directory(join(appDir.path, subDir));
+    if (!await targetDir.exists()) {
+      await targetDir.create(recursive: true);
+    }
+    // Preserve the original extension; generate a collision-free name.
+    final ext = extension(file.path);
+    final newPath = join(targetDir.path, '${const Uuid().v4()}$ext');
     await file.copy(newPath);
     return newPath;
   }
 
-  Future<String> _getStoragePath() async {
-    if (kIsWeb) {
-      return '';
-    }
-    final directory = await getApplicationDocumentsDirectory();
-    return directory.path;
+  /// Copies any media that isn't already inside the app's permanent storage,
+  /// dropping references to files that no longer exist. Returns a note whose
+  /// media paths are all permanent.
+  Future<Note> _persistMedia(Note note) async {
+    final appDir = await _appDirPath();
+    final images = await _localize(note.images, 'images', appDir);
+    final audio = await _localize(note.audioRecordings, 'audio', appDir);
+    return note.copyWith(images: images, audioRecordings: audio);
   }
 
-  void _handleWebStorage() {}
+  Future<List<String>> _localize(
+      List<String> paths, String subDir, String appDir) async {
+    final result = <String>[];
+    for (final path in paths) {
+      if (path.isEmpty) continue;
+      if (path.startsWith(appDir)) {
+        result.add(path);
+        continue;
+      }
+      final file = File(path);
+      if (await file.exists()) {
+        try {
+          result.add(await copyFileToLocalStorage(file, subDir));
+        } catch (e) {
+          debugPrint('Failed to copy media $path: $e');
+        }
+      }
+    }
+    return result;
+  }
 
   Future<List<Note>> getNotes() async {
     try {
-      if (kIsWeb) {
-        return [];
-      }
       final db = await database;
-      final List<Map<String, dynamic>> maps =
-          await db.query('notes', orderBy: 'timestamp DESC');
-
-      return List.generate(maps.length, (i) {
-        final Map<String, dynamic> noteMap = maps[i];
-        final images = noteMap['images'] != null
-            ? noteMap['images']
-                .toString()
-                .split(',')
-                .where((s) => s.isNotEmpty)
-                .toList()
-            : <String>[];
-        final audioRecordings = noteMap['audioRecordings'] != null
-            ? noteMap['audioRecordings']
-                .toString()
-                .split(',')
-                .where((s) => s.isNotEmpty)
-                .toList()
-            : <String>[];
-
-        return Note(
-          id: noteMap['id'] ?? '',
-          title: noteMap['title'] ?? '',
-          content: noteMap['content'] ?? '',
-          timestamp: DateTime.parse(
-              noteMap['timestamp'] ?? DateTime.now().toIso8601String()),
-          createdAt: DateTime.parse(
-              noteMap['createdAt'] ?? DateTime.now().toIso8601String()),
-          modifiedAt: DateTime.parse(
-              noteMap['modifiedAt'] ?? DateTime.now().toIso8601String()),
-          images: images,
-          color: noteMap['color'] ?? '#FFFFFF',
-          audioRecordings: audioRecordings,
-          titleColor: Color(
-              int.parse(noteMap['titleColor']?.toString() ?? '0xFF000000')),
-          contentColor: Color(
-              int.parse(noteMap['contentColor']?.toString() ?? '0xFF000000')),
-        );
-      });
+      final maps = await db.query(
+        'notes',
+        orderBy: 'isPinned DESC, modifiedAt DESC',
+      );
+      return maps.map(Note.fromDbMap).toList();
     } catch (e) {
       debugPrint('Error getting notes: $e');
       return [];
     }
   }
 
-  Future<void> insertNote(
-      Note note, List<String> newImages, List<String> newAudioFiles) async {
+  Future<Note> insertNote(Note note) async {
     final db = await database;
-
-    // Copy new files to app's local storage
-    List<String> savedImages = List.from(note.images);
-    List<String> savedAudioFiles = List.from(note.audioRecordings);
-
-    // Add new images
-    for (String imagePath in newImages) {
-      if (await File(imagePath).exists()) {
-        final String savedPath =
-            await copyFileToLocalStorage(File(imagePath), 'images');
-        savedImages.add(savedPath);
-      }
-    }
-
-    // Add new audio files
-    for (String audioPath in newAudioFiles) {
-      if (await File(audioPath).exists()) {
-        final String savedPath =
-            await copyFileToLocalStorage(File(audioPath), 'audio');
-        savedAudioFiles.add(savedPath);
-      }
-    }
-
+    final persisted = await _persistMedia(note);
     await db.insert(
       'notes',
-      {
-        'id': note.id,
-        'title': note.title,
-        'content': note.content,
-        'timestamp': DateTime.now().toIso8601String(),
-        'createdAt': note.createdAt.toIso8601String(),
-        'modifiedAt': DateTime.now().toIso8601String(),
-        'color': note.color,
-        'titleColor': note.titleColor.value.toString(),
-        'contentColor': note.contentColor.value.toString(),
-        'images': savedImages.join(','),
-        'audioRecordings': savedAudioFiles.join(','),
-      },
+      persisted.toDbMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    return persisted;
   }
 
-  Future<void> updateNote(Note note) async {
+  Future<Note> updateNote(Note note) async {
+    final db = await database;
+    final persisted = await _persistMedia(note);
+
+    // Clean up media files that were removed during this edit.
+    final existing = await db.query('notes',
+        columns: ['images', 'audioRecordings'],
+        where: 'id = ?',
+        whereArgs: [note.id]);
+    if (existing.isNotEmpty) {
+      final oldFiles = <String>{
+        ..._split(existing.first['images']),
+        ..._split(existing.first['audioRecordings']),
+      };
+      final keep = <String>{...persisted.images, ...persisted.audioRecordings};
+      for (final path in oldFiles.difference(keep)) {
+        await _deleteFile(path);
+      }
+    }
+
+    await db.update(
+      'notes',
+      persisted.toDbMap(),
+      where: 'id = ?',
+      whereArgs: [note.id],
+    );
+    return persisted;
+  }
+
+  Future<void> setPinned(String id, bool pinned) async {
     final db = await database;
     await db.update(
       'notes',
       {
-        'title': note.title,
-        'content': note.content,
+        'isPinned': pinned ? 1 : 0,
         'modifiedAt': DateTime.now().toIso8601String(),
-        'color': note.color,
-        'titleColor': note.titleColor.value.toString(),
-        'contentColor': note.contentColor.value.toString(),
-        'images': note.images.join(','),
-        'audioRecordings': note.audioRecordings.join(','),
       },
-      where: 'id = ?',
-      whereArgs: [note.id],
-    );
-  }
-
-  Future<void> deleteNote(String id) async {
-    final db = await database;
-
-    final note = await db.query('notes', where: 'id = ?', whereArgs: [id]);
-    if (note.isNotEmpty) {
-      final images = note.first['images'].toString().split(',');
-      final audioRecordings =
-          note.first['audioRecordings'].toString().split(',');
-
-      for (String path in [...images, ...audioRecordings]) {
-        if (path.isNotEmpty) {
-          final file = File(path);
-          if (await file.exists()) {
-            await file.delete();
-          }
-        }
-      }
-    }
-
-    await db.delete(
-      'notes',
       where: 'id = ?',
       whereArgs: [id],
     );
+  }
+
+  /// Removes only the database row. Media files are left on disk so the delete
+  /// can be undone; call [deleteNoteFiles] to reclaim the space afterwards.
+  Future<void> deleteNoteRow(String id) async {
+    final db = await database;
+    await db.delete('notes', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Permanently deletes the media files associated with [note].
+  Future<void> deleteNoteFiles(Note note) async {
+    for (final path in [...note.images, ...note.audioRecordings]) {
+      await _deleteFile(path);
+    }
+  }
+
+  List<String> _split(dynamic value) {
+    final raw = value?.toString() ?? '';
+    if (raw.isEmpty) return const [];
+    final separator = raw.contains('\n') ? '\n' : ',';
+    return raw.split(separator).where((s) => s.isNotEmpty).toList();
+  }
+
+  Future<void> _deleteFile(String path) async {
+    try {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } catch (e) {
+      debugPrint('Failed to delete file $path: $e');
+    }
   }
 }

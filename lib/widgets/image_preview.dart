@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 
 class ImagePreview extends StatefulWidget {
   final String imagePath;
@@ -13,8 +14,8 @@ class ImagePreview extends StatefulWidget {
 
 class _ImagePreviewState extends State<ImagePreview>
     with SingleTickerProviderStateMixin {
-  late TransformationController _controller;
-  late AnimationController _animationController;
+  late final TransformationController _controller;
+  late final AnimationController _animationController;
   Animation<Matrix4>? _animation;
   TapDownDetails? _doubleTapDetails;
 
@@ -24,63 +25,39 @@ class _ImagePreviewState extends State<ImagePreview>
     _controller = TransformationController();
     _animationController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 300),
+      duration: const Duration(milliseconds: 250),
     )..addListener(() {
-        if (_animation != null) {
-          _controller.value = _animation!.value;
-        }
+        if (_animation != null) _controller.value = _animation!.value;
       });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    _animationController.dispose();
-    super.dispose();
-  }
-
-  void _handleDoubleTapDown(TapDownDetails details) {
-    _doubleTapDetails = details;
   }
 
   void _handleDoubleTap() {
     if (_controller.value != Matrix4.identity()) {
-      // If zoomed in, zoom out
-      _resetAnimation();
+      _animateTo(Matrix4.identity());
     } else {
-      // If zoomed out, zoom in on double tap location
       final position = _doubleTapDetails!.localPosition;
-      _zoomAnimation(position);
+      const scale = 2.5;
+      _animateTo(Matrix4.identity()
+        ..translateByDouble(
+            -position.dx * (scale - 1), -position.dy * (scale - 1), 0, 1)
+        ..scaleByDouble(scale, scale, scale, 1));
     }
   }
 
-  void _resetAnimation() {
-    _animation = Matrix4Tween(
-      begin: _controller.value,
-      end: Matrix4.identity(),
-    ).animate(CurvedAnimation(
-      parent: _animationController,
-      curve: Curves.easeInOut,
-    ));
+  void _animateTo(Matrix4 target) {
+    _animation = Matrix4Tween(begin: _controller.value, end: target).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeOutCubic),
+    );
     _animationController.forward(from: 0);
   }
 
-  void _zoomAnimation(Offset position) {
-    final double scale = 2.0;
-    final x = -position.dx * (scale - 1);
-    final y = -position.dy * (scale - 1);
-    final zoomed = Matrix4.identity()
-      ..translate(x, y)
-      ..scale(scale);
-
-    _animation = Matrix4Tween(
-      begin: _controller.value,
-      end: zoomed,
-    ).animate(CurvedAnimation(
-      parent: _animationController,
-      curve: Curves.easeInOut,
-    ));
-    _animationController.forward(from: 0);
+  Future<void> _share() async {
+    HapticFeedback.lightImpact();
+    if (!File(widget.imagePath).existsSync()) return;
+    try {
+      await SharePlus.instance
+          .share(ShareParams(files: [XFile(widget.imagePath)]));
+    } catch (_) {}
   }
 
   @override
@@ -90,67 +67,50 @@ class _ImagePreviewState extends State<ImagePreview>
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
-        elevation: 0,
+        foregroundColor: Colors.white,
+        systemOverlayStyle: SystemUiOverlayStyle.light,
         leading: IconButton(
-          icon: Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.black26,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
-          ),
-          onPressed: () {
-            HapticFeedback.lightImpact();
-            Navigator.pop(context);
-          },
+          icon: const Icon(Icons.arrow_back_ios_new_rounded),
+          onPressed: () => Navigator.pop(context),
         ),
         actions: [
           IconButton(
-            icon: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.black26,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Icon(Icons.share_rounded, color: Colors.white),
-            ),
-            onPressed: () {
-              //  share functionality
-              HapticFeedback.lightImpact();
-            },
+            icon: const Icon(Icons.ios_share_rounded),
+            onPressed: _share,
+            tooltip: 'Share image',
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
         ],
       ),
-      body: Center(
-        child: GestureDetector(
-          onDoubleTapDown: _handleDoubleTapDown,
-          onDoubleTap: _handleDoubleTap,
+      body: GestureDetector(
+        onDoubleTapDown: (d) => _doubleTapDetails = d,
+        onDoubleTap: _handleDoubleTap,
+        child: Center(
           child: Hero(
             tag: 'image-${widget.imagePath}',
             child: InteractiveViewer(
               transformationController: _controller,
               minScale: 0.5,
-              maxScale: 4.0,
-              clipBehavior: Clip.none,
+              maxScale: 4,
               child: Image.file(
                 File(widget.imagePath),
                 fit: BoxFit.contain,
-                errorBuilder: (context, error, stackTrace) {
-                  return const Center(
-                    child: Icon(
-                      Icons.broken_image_rounded,
-                      size: 64,
-                      color: Colors.white54,
-                    ),
-                  );
-                },
+                errorBuilder: (_, _, _) => const Center(
+                  child: Icon(Icons.broken_image_rounded,
+                      size: 64, color: Colors.white54),
+                ),
               ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _animationController.dispose();
+    super.dispose();
   }
 }

@@ -1,21 +1,22 @@
+import 'dart:async';
 import 'dart:io';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:uuid/uuid.dart';
 import '../models/note.dart';
+import '../models/drawing_stroke.dart';
 import '../services/note_service.dart';
-import '../widgets/drawing_canvas.dart';
 import '../services/audio_service.dart';
-import 'drawing_screen.dart';
+import '../services/note_share_manager.dart';
+import '../services/deepseek_service.dart';
+import '../theme/app_palette.dart';
+import '../widgets/drawing_canvas.dart';
 import '../widgets/audio_player_widget.dart';
 import '../widgets/image_preview.dart';
+import 'drawing_screen.dart';
 import 'drawing_preview_screen.dart';
-import '../services/note_share_manager.dart';
-import 'package:flutter/foundation.dart';
-import '../services/deepseek_service.dart';
 
 class NoteEditorScreen extends StatefulWidget {
   final Note? note;
@@ -31,312 +32,222 @@ class NoteEditorScreen extends StatefulWidget {
   State<NoteEditorScreen> createState() => _NoteEditorScreenState();
 }
 
-class _NoteEditorScreenState extends State<NoteEditorScreen>
-    with SingleTickerProviderStateMixin {
-  bool _isSaving = false;
-  late TextEditingController _titleController;
-  late TextEditingController _contentController;
-  final List<String> _images = [];
+class _NoteEditorScreenState extends State<NoteEditorScreen> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _contentController;
+
+  final _images = <String>[];
+  final _audioRecordings = <String>[];
+  var _drawings = <DrawingStroke>[];
   String _selectedColor = '#FFFFFF';
+  int _titleColor = 0xFF000000;
+  int _contentColor = 0xFF000000;
+  bool _isPinned = false;
 
-  late AnimationController _colorPickerController;
-  bool _isEdited = false;
-  List<DrawingPoint> _drawings = [];
-  bool _showDrawingCanvas = false;
   final AudioService _audioService = AudioService();
-  final List<String> _audioRecordings = [];
-  bool _isRecording = false;
-
-  Color _titleColor = Colors.black;
-  Color _contentColor = Colors.black;
-  bool _isDrawingVisible = false;
   final _shareManager = NoteShareManager();
+  final DeepSeekService _deepSeek = DeepSeekService();
 
-  final DeepSeekService _deepSeekService = DeepSeekService();
+  bool _isEdited = false;
+  bool _isSaving = false;
+  bool _isRecording = false;
   bool _isAiProcessing = false;
-  final TextEditingController _promptController = TextEditingController();
+  Duration _recordElapsed = Duration.zero;
+  Timer? _recordTimer;
 
-  // Add these new properties at the top with other state variables
-  bool _hasAiContent = false;
-  int _aiContentStartIndex = -1;
-  int _aiContentEndIndex = -1;
+  bool get _isNew => widget.note == null;
 
   @override
   void initState() {
     super.initState();
-    _titleController = TextEditingController(text: widget.note?.title ?? '');
-    _contentController =
-        TextEditingController(text: widget.note?.content ?? '');
-    _selectedColor = widget.note?.color ?? '#FFFFFF';
-    _titleColor = widget.note?.titleColor ?? Colors.black;
-    _contentColor = widget.note?.contentColor ?? Colors.black;
-
-    // Initialize audio recordings from existing note
-    if (widget.note?.audioRecordings != null) {
-      _audioRecordings.addAll(widget.note!.audioRecordings);
+    final note = widget.note;
+    _titleController = TextEditingController(text: note?.title ?? '');
+    _contentController = TextEditingController(text: note?.content ?? '');
+    _selectedColor = note?.color ?? '#FFFFFF';
+    _titleColor = note?.titleColor ?? 0xFF000000;
+    _contentColor = note?.contentColor ?? 0xFF000000;
+    _isPinned = note?.isPinned ?? false;
+    if (note != null) {
+      _images.addAll(note.images);
+      _audioRecordings.addAll(note.audioRecordings);
+      _drawings = List.of(note.drawings);
     }
-    // Initialize images from existing note
-    if (widget.note?.images != null) {
-      _images.addAll(widget.note!.images);
-    }
+    _titleController.addListener(_markEdited);
+    _contentController.addListener(_markEdited);
+  }
 
-    _colorPickerController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 200),
+  void _markEdited() {
+    if (!_isEdited) setState(() => _isEdited = true);
+  }
+
+  // ---------------------------------------------------------------- helpers
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Note _buildNote() {
+    var title = _titleController.text.trim();
+    final content = _contentController.text.trim();
+    if (title.isEmpty) {
+      title = content.isNotEmpty
+          ? content.split('\n').first.trim()
+          : 'Untitled';
+      if (title.length > 60) title = '${title.substring(0, 60)}…';
+    }
+    return Note(
+      id: widget.note?.id ?? const Uuid().v4(),
+      title: title,
+      content: content,
+      createdAt: widget.note?.createdAt ?? DateTime.now(),
+      modifiedAt: DateTime.now(),
+      images: List.of(_images),
+      audioRecordings: List.of(_audioRecordings),
+      drawings: List.of(_drawings),
+      color: _selectedColor,
+      titleColor: _titleColor,
+      contentColor: _contentColor,
+      isPinned: _isPinned,
     );
-
-    _titleController.addListener(_markAsEdited);
-    _contentController.addListener(_markAsEdited);
   }
 
-  void _markAsEdited() {
-    setState(() => _isEdited = true);
-  }
+  bool get _isBlank =>
+      _titleController.text.trim().isEmpty &&
+      _contentController.text.trim().isEmpty &&
+      _images.isEmpty &&
+      _audioRecordings.isEmpty &&
+      _drawings.isEmpty;
 
-  Future<void> _pickImage() async {
+  /// Saves the note. Returns true if it is safe to leave the screen.
+  Future<bool> _saveNote() async {
+    if (_isBlank) {
+      // Nothing worth keeping — leave without creating an empty note.
+      return true;
+    }
+    if (_isSaving) return false;
+    setState(() => _isSaving = true);
     try {
-      final ImagePicker picker = ImagePicker();
-      final XFile? image = await picker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 80,
-      );
-
-      if (image != null) {
-        setState(() {
-          _images.add(image.path);
-          _isEdited = true;
-        });
+      final note = _buildNote();
+      if (_isNew) {
+        await widget.noteService.addNote(note);
+      } else {
+        await widget.noteService.updateNote(note);
       }
+      _showMessage(_isNew ? 'Note created' : 'Note saved');
+      return true;
     } catch (e) {
-      _showError('Failed to pick image');
+      _showMessage('Failed to save note');
+      debugPrint('Save error: $e');
+      return false;
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
     }
   }
 
-  void _showColorPicker() {
-    HapticFeedback.selectionClick();
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => AnimatedBuilder(
-        animation: _colorPickerController,
-        builder: (context, child) => Container(
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          transform: Matrix4.translationValues(
-            0,
-            50 * (1 - _colorPickerController.value),
-            0,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 20),
-              Text(
-                'Choose Note Color',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 20),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  '#FFFFFF',
-                  '#F8D7DA',
-                  '#D4EDDA',
-                  '#CCE5FF',
-                  '#FFF3CD',
-                  '#E2E3E5',
-                ].map(_buildColorButton).toList(),
-              ),
-              const SizedBox(height: 20),
-            ],
-          ),
-        ),
-      ),
-    ).then((_) => _colorPickerController.reverse());
-    _colorPickerController.forward();
+  Future<void> _onSavePressed() async {
+    if (await _saveNote() && mounted) Navigator.pop(context);
   }
 
-  Widget _buildColorButton(String color) {
-    final bool isSelected = _selectedColor == color;
-    return GestureDetector(
-      onTap: () {
-        HapticFeedback.lightImpact();
-        setState(() {
-          _selectedColor = color;
-          _isEdited = true;
-        });
-        Navigator.pop(context);
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        width: 50,
-        height: 50,
-        margin: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color:
-              Color(int.parse(color.substring(1, 7), radix: 16) + 0xFF000000),
-          borderRadius: BorderRadius.circular(25),
-          border: Border.all(
-            color: isSelected
-                ? Theme.of(context).colorScheme.primary
-                : Colors.grey,
-            width: isSelected ? 2 : 1,
-          ),
-          boxShadow: isSelected
-              ? [
-                  BoxShadow(
-                    color:
-                        Theme.of(context).colorScheme.primary.withOpacity(0.3),
-                    blurRadius: 8,
-                    spreadRadius: 1,
-                  ),
-                ]
-              : null,
-        ),
-      ),
-    );
-  }
-
-  Future<bool> _onWillPop() async {
-    if (!_isEdited) return true;
-
-    final result = await showDialog<bool>(
+  Future<void> _handleBack() async {
+    if (!_isEdited) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+    final action = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Save changes?'),
-        content: const Text('Do you want to save your changes before leaving?'),
+        content: const Text('Keep your changes to this note?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Discard'),
+            onPressed: () => Navigator.pop(context, 'cancel'),
+            child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
-              _saveNote();
-              Navigator.pop(context, true);
-            },
+            onPressed: () => Navigator.pop(context, 'discard'),
+            child: const Text('Discard'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, 'save'),
             child: const Text('Save'),
           ),
         ],
       ),
     );
-
-    return result ?? false;
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
-
-  Future<void> _saveNote() async {
-    if (_titleController.text.isEmpty) {
-      _showError('Please add a title');
-      return;
+    if (!mounted || action == null || action == 'cancel') return;
+    if (action == 'discard') {
+      Navigator.pop(context);
+    } else if (action == 'save') {
+      await _onSavePressed();
     }
+  }
 
+  // ---------------------------------------------------------------- media
+
+  Future<void> _pickImage() async {
     try {
-      setState(() => _isSaving = true);
-
-      final note = Note(
-        id: widget.note?.id ??
-            const Uuid().v4(), // Generate new UUID for new notes
-        title: _titleController.text.trim(),
-        content: _contentController.text.trim(),
-        timestamp: DateTime.now(),
-        createdAt: widget.note?.createdAt ?? DateTime.now(),
-        modifiedAt: DateTime.now(),
-        images: _images,
-        color: _selectedColor,
-        titleColor: _titleColor,
-        contentColor: _contentColor,
-        audioRecordings: _audioRecordings,
-      );
-
-      debugPrint('Saving note with recordings: ${note.audioRecordings}');
-
-      if (widget.note == null) {
-        await widget.noteService.addNote(note);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Note created successfully')),
-          );
-        }
-      } else {
-        await widget.noteService.updateNote(note);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Note updated successfully')),
-          );
-        }
-      }
-
-      if (mounted) {
-        Navigator.pop(context);
+      final picker = ImagePicker();
+      final picked =
+          await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+      if (picked != null) {
+        setState(() {
+          _images.add(picked.path);
+          _isEdited = true;
+        });
       }
     } catch (e) {
-      debugPrint('Error saving note: $e');
-      if (mounted) {
-        _showError('Failed to save note: ${e.toString()}');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isSaving = false);
-      }
+      _showMessage('Failed to pick image');
     }
   }
 
   Future<void> _toggleRecording() async {
-    if (kIsWeb) {
-      _showError('Audio recording is not supported on web platform');
-      return;
-    }
-
     if (!_isRecording) {
       final path = await _audioService.startRecording();
-      if (path != null) {
-        setState(() {
-          _isRecording = true;
-          _isEdited = true;
-        });
-      } else {
-        _showError('Failed to start recording');
+      if (path == null) {
+        _showMessage('Microphone permission is required to record');
+        return;
       }
+      setState(() {
+        _isRecording = true;
+        _isEdited = true;
+        _recordElapsed = Duration.zero;
+      });
+      _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) {
+          setState(() => _recordElapsed += const Duration(seconds: 1));
+        }
+      });
     } else {
+      _recordTimer?.cancel();
       final path = await _audioService.stopRecording();
-      if (path != null) {
-        setState(() {
-          _audioRecordings.add(path);
-          _isRecording = false;
-          _isEdited = true; // Mark as edited when recording is added
-        });
-        debugPrint('Added recording: $path');
-      }
+      setState(() {
+        _isRecording = false;
+        if (path != null) _audioRecordings.add(path);
+      });
+      if (path == null) _showMessage('Recording failed');
     }
   }
 
-  void _openDrawingScreen() {
-    Navigator.push(
+  Future<void> _openDrawing() async {
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => DrawingScreen(
           initialDrawings: _drawings,
-          onDrawingComplete: (drawings) {
-            setState(() {
-              _drawings = drawings;
-              _isEdited = true;
-            });
-          },
+          onDrawingComplete: (strokes) =>
+              setState(() {
+            _drawings = strokes;
+            _isEdited = true;
+          }),
         ),
       ),
     );
   }
 
-  void _toggleDrawingVisibility() {
+  void _previewDrawing() {
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -345,593 +256,729 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     );
   }
 
-  Widget _buildAudioRecordings() {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (_audioRecordings.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          Text(
-            'Recordings',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  // Use white text in dark mode
-                  color: isDarkMode ? Colors.white : Colors.black87,
-                ),
-          ),
-          const SizedBox(height: 8),
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: _audioRecordings.length,
-            itemBuilder: (context, index) {
-              return AudioPlayerWidget(
-                audioPath: _audioRecordings[index],
-                audioService: _audioService,
-                onDelete: () {
-                  setState(() {
-                    _audioRecordings.removeAt(index);
-                    _isEdited = true;
-                  });
-                },
-              );
-            },
-          ),
-        ],
-      ],
-    );
-  }
+  // ---------------------------------------------------------------- sharing
 
-  Color _getDarkerColor(Color baseColor) {
-    final HSLColor hsl = HSLColor.fromColor(baseColor);
-    return hsl.withLightness((hsl.lightness * 0.8).clamp(0.0, 1.0)).toColor();
-  }
-
-  Color _getTextColor(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    if (isDarkMode) {
-      return Colors.white;
+  Future<void> _shareAsText() async {
+    final note = _buildNote();
+    final buffer = StringBuffer()
+      ..writeln(note.title)
+      ..writeln()
+      ..write(note.content);
+    final files =
+        _images.where((p) => File(p).existsSync()).map((p) => XFile(p)).toList();
+    try {
+      await SharePlus.instance.share(
+        ShareParams(text: buffer.toString(), files: files.isEmpty ? null : files),
+      );
+    } catch (e) {
+      _showMessage('Could not open share sheet');
     }
-
-    final backgroundColorInt =
-        int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000;
-    final backgroundColor = Color(backgroundColorInt);
-    final backgroundBrightness = backgroundColor.computeLuminance();
-    return backgroundBrightness > 0.5 ? Colors.black : Colors.white;
   }
 
-  // Add color selection method
-  void _showTextColorPicker(bool isTitle) {
+  Future<void> _shareNearby() async {
+    if (_isBlank) {
+      _showMessage('Add something to the note before sharing');
+      return;
+    }
+    _showMessage('Looking for nearby devices…');
+    try {
+      final ok = await _shareManager.shareNote(_buildNote());
+      _showMessage(ok ? 'Note sent to nearby devices' : 'No nearby devices found');
+    } catch (e) {
+      _showMessage('Failed to share note');
+    }
+  }
+
+  // ---------------------------------------------------------------- AI
+
+  Future<void> _runAi(String instruction) async {
+    if (instruction.trim().isEmpty) return;
+    setState(() => _isAiProcessing = true);
+    try {
+      final context = _contentController.text.trim();
+      final result = await _deepSeek.chat(
+        systemMessage:
+            'You are a concise writing assistant inside a note-taking app. '
+            'Return only the requested text with no preamble.',
+        userMessage: context.isEmpty
+            ? instruction
+            : '$instruction\n\n---\nNote content:\n$context',
+      );
+      _insertAtCursor(result);
+      setState(() => _isEdited = true);
+    } on AiUnconfiguredException {
+      _showMessage('AI is disabled — no API key configured');
+    } catch (e) {
+      _showMessage(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _isAiProcessing = false);
+    }
+  }
+
+  void _insertAtCursor(String text) {
+    final controller = _contentController;
+    final value = controller.value;
+    final sel = value.selection;
+    final base = value.text;
+    final prefix = base.isEmpty || base.endsWith('\n') ? '' : '\n';
+    final insertion = '$prefix$text';
+    if (sel.isValid) {
+      final newText = base.replaceRange(sel.start, sel.end, insertion);
+      controller.value = TextEditingValue(
+        text: newText,
+        selection:
+            TextSelection.collapsed(offset: sel.start + insertion.length),
+      );
+    } else {
+      final newText = base + insertion;
+      controller.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(offset: newText.length),
+      );
+    }
+  }
+
+  void _openAiSheet() {
+    if (!_deepSeek.isConfigured) {
+      _showMessage('AI is disabled — set DEEPSEEK_API_KEY to enable it');
+      return;
+    }
+    final promptController = TextEditingController();
+    const actions = <(String, String, IconData)>[
+      ('Summarize', 'Summarize this note in a few bullet points.', Icons.subject_rounded),
+      ('Improve', 'Rewrite this note to be clearer and better structured.', Icons.auto_fix_high_rounded),
+      ('Fix grammar', 'Fix spelling and grammar in this note. Keep the meaning.', Icons.spellcheck_rounded),
+      ('Continue', 'Continue writing this note naturally from where it ends.', Icons.notes_rounded),
+      ('To list', 'Turn this note into a clear checklist.', Icons.checklist_rounded),
+    ];
     showModalBottomSheet(
       context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16),
+      isScrollControlled: true,
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 8,
+          bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 20,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              isTitle ? 'Choose Title Color' : 'Choose Text Color',
-              style: Theme.of(context).textTheme.titleLarge,
+            Row(
+              children: [
+                Icon(Icons.auto_awesome, color: Theme.of(sheetContext).colorScheme.primary),
+                const SizedBox(width: 8),
+                Text('AI assistant',
+                    style: Theme.of(sheetContext).textTheme.titleLarge),
+              ],
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                Colors.black,
-                Colors.red,
-                Colors.blue,
-                Colors.green,
-                Colors.purple,
-                Colors.orange,
-                Colors.teal,
-                Colors.pink,
-                Colors.indigo,
-                Colors.amber,
-              ]
-                  .map((color) => GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            if (isTitle) {
-                              _titleColor = color;
-                            } else {
-                              _contentColor = color;
-                            }
-                            _isEdited = true;
-                          });
-                          Navigator.pop(context);
-                        },
-                        child: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: color,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: (isTitle ? _titleColor : _contentColor) ==
-                                      color
-                                  ? Colors.white
-                                  : Colors.transparent,
-                              width: 2,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.1),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ))
-                  .toList(),
+                for (final (label, prompt, icon) in actions)
+                  ActionChip(
+                    avatar: Icon(icon, size: 18),
+                    label: Text(label),
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      _runAi(prompt);
+                    },
+                  ),
+              ],
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMainContent(Color textColor) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-
-    return SingleChildScrollView(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Title section
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _titleController,
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: isDarkMode ? Colors.white : _titleColor,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Title',
-                    border: InputBorder.none,
-                    hintStyle: TextStyle(
-                      color: isDarkMode
-                          ? Colors.white60
-                          : textColor.withOpacity(0.6),
-                    ),
-                  ),
-                ),
-              ),
-              IconButton(
-                icon: Icon(
-                  Icons.format_color_text_rounded,
-                  color: isDarkMode ? Colors.white : Colors.black87,
-                ),
-                onPressed: () => _showTextColorPicker(true),
-                tooltip: 'Change title color',
-              ),
-            ],
-          ),
-
-          // Images section
-          if (_images.isNotEmpty) ...[
             const SizedBox(height: 16),
-            SizedBox(
-              height: 100,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: _images.length,
-                itemBuilder: (context, index) => _buildImageItem(index),
-              ),
-            ),
-          ],
-
-          const SizedBox(height: 16),
-
-          // Content section
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _contentController,
-                  maxLines: null,
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: isDarkMode ? Colors.white : _contentColor,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Start writing...',
-                    border: InputBorder.none,
-                    hintStyle: TextStyle(
-                      color: isDarkMode
-                          ? Colors.white60
-                          : textColor.withOpacity(0.6),
-                    ),
-                  ),
-                  onChanged: (value) {
-                    _markAsEdited();
-                    // Check for command prefix
-                    if (value.endsWith('/')) {
-                      _showAiPromptDialog();
-                    }
+            TextField(
+              controller: promptController,
+              autofocus: false,
+              minLines: 1,
+              maxLines: 4,
+              textInputAction: TextInputAction.send,
+              decoration: InputDecoration(
+                hintText: 'Ask AI anything…',
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.send_rounded),
+                  onPressed: () {
+                    final text = promptController.text;
+                    Navigator.pop(sheetContext);
+                    _runAi(text);
                   },
                 ),
               ),
-              IconButton(
-                icon: Icon(
-                  Icons.format_color_text_rounded,
-                  color: isDarkMode ? Colors.white : Colors.black87,
-                ),
-                onPressed: () => _showTextColorPicker(false),
-                tooltip: 'Change text color',
-              ),
-            ],
-          ),
-
-          // Drawings section
-          if (_drawings.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Text(
-                  'Drawing attached',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: isDarkMode ? Colors.white : Colors.black87,
-                      ),
-                ),
-                IconButton(
-                  icon: Icon(Icons.visibility_rounded,
-                      color: isDarkMode ? Colors.white : Colors.black87),
-                  onPressed: _toggleDrawingVisibility,
-                  tooltip: 'View drawing',
-                ),
-                IconButton(
-                  icon: Icon(Icons.edit_rounded,
-                      color: isDarkMode ? Colors.white : Colors.black87),
-                  onPressed: _openDrawingScreen,
-                  tooltip: 'Edit drawing',
-                ),
-              ],
+              onSubmitted: (text) {
+                Navigator.pop(sheetContext);
+                _runAi(text);
+              },
             ),
           ],
-
-          // Audio recordings section
-          if (_audioRecordings.isNotEmpty) _buildAudioRecordings(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildImageItem(int index) {
-    return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => ImagePreview(imagePath: _images[index]),
-          ),
-        );
-      },
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        width: 100,
-        height: 100,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          image: DecorationImage(
-            image: FileImage(File(_images[index])),
-            fit: BoxFit.cover,
-          ),
         ),
       ),
     );
   }
 
-  Future<void> _showDeleteDialog() async {
-    final result = await showDialog<bool>(
+  // ---------------------------------------------------------------- colours
+
+  void _showNoteColorPicker() {
+    HapticFeedback.selectionClick();
+    showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Note colour',
+                style: Theme.of(sheetContext).textTheme.titleLarge),
+            const SizedBox(height: 20),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                for (final hex in AppPalette.noteColors)
+                  _swatch(
+                    AppPalette.fromHex(hex),
+                    selected: _selectedColor == hex,
+                    onTap: () {
+                      setState(() {
+                        _selectedColor = hex;
+                        _isEdited = true;
+                      });
+                      Navigator.pop(sheetContext);
+                    },
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showTextColorPicker({required bool isTitle}) {
+    showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(isTitle ? 'Title colour' : 'Text colour',
+                style: Theme.of(sheetContext).textTheme.titleLarge),
+            const SizedBox(height: 20),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                for (final color in AppPalette.textColors)
+                  _swatch(
+                    color,
+                    selected: (isTitle ? _titleColor : _contentColor) ==
+                        color.toARGB32(),
+                    onTap: () {
+                      setState(() {
+                        if (isTitle) {
+                          _titleColor = color.toARGB32();
+                        } else {
+                          _contentColor = color.toARGB32();
+                        }
+                        _isEdited = true;
+                      });
+                      Navigator.pop(sheetContext);
+                    },
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _swatch(Color color,
+      {required bool selected, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.lightImpact();
+        onTap();
+      },
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: selected
+                ? Theme.of(context).colorScheme.primary
+                : Theme.of(context).colorScheme.outlineVariant,
+            width: selected ? 3 : 1,
+          ),
+        ),
+        child: selected
+            ? Icon(Icons.check, color: AppPalette.onColor(color), size: 20)
+            : null,
+      ),
+    );
+  }
+
+  Color _legible(int chosen, Color background, Color fallback) {
+    if (chosen == 0xFF000000) return fallback; // user left the default
+    final c = Color(chosen);
+    final diff = (c.computeLuminance() - background.computeLuminance()).abs();
+    return diff < 0.25 ? fallback : c;
+  }
+
+  // ---------------------------------------------------------------- delete
+
+  Future<void> _confirmDelete() async {
+    final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Note'),
-        content: const Text('Are you sure you want to delete this note?'),
+        title: const Text('Delete note?'),
+        content: const Text('This note will be moved out of your list.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.red,
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
             ),
+            onPressed: () => Navigator.pop(context, true),
             child: const Text('Delete'),
           ),
         ],
       ),
     );
-
-    if (result == true && mounted) {
-      try {
-        await widget.noteService.deleteNote(widget.note!.id);
-        if (mounted) {
-          Navigator.pop(context);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Note deleted successfully')),
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          _showError('Failed to delete note: ${e.toString()}');
-        }
-      }
+    if (confirmed == true && mounted) {
+      // Remove now (media retained) and return the note so the home screen can
+      // offer an Undo before the files are purged.
+      await widget.noteService.removeNote(widget.note!.id);
+      if (mounted) Navigator.pop(context, widget.note);
     }
   }
 
-  Future<void> _shareWithNearby() async {
-    if (_titleController.text.isEmpty) {
-      _showError('Please add a title before sharing');
-      return;
-    }
+  // ---------------------------------------------------------------- build
 
-    try {
-      setState(() => _isSaving = true);
+  @override
+  Widget build(BuildContext context) {
+    final brightness = Theme.of(context).brightness;
+    final scheme = Theme.of(context).colorScheme;
+    final background = AppPalette.resolve(_selectedColor, brightness);
+    final onBackground = AppPalette.onColor(background);
+    final titleColor = _legible(_titleColor, background, onBackground);
+    final contentColor = _legible(_contentColor, background, onBackground);
 
-      final note = Note(
-        id: widget.note?.id ?? const Uuid().v4(),
-        title: _titleController.text.trim(),
-        content: _contentController.text.trim(),
-        timestamp: DateTime.now(),
-        createdAt: widget.note?.createdAt ?? DateTime.now(),
-        modifiedAt: DateTime.now(),
-        images: _images,
-        color: _selectedColor,
-        titleColor: _titleColor,
-        contentColor: _contentColor,
-        audioRecordings: _audioRecordings,
-      );
-
-      await _shareManager.shareNote(note);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Note shared with nearby devices')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        _showError('Failed to share note: ${e.toString()}');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isSaving = false);
-      }
-    }
-  }
-
-  Future<void> _processAiCommand(String prompt) async {
-    if (prompt.isEmpty) return;
-
-    setState(() => _isAiProcessing = true);
-    try {
-      final currentText = _contentController.text;
-      final responseText = await _deepSeekService.chat(
-        userMessage: '$prompt\n\nContext: $currentText',
-        systemMessage:
-            'You are a helpful writing assistant inside a note-taking app.',
-      );
-      if (mounted) {
-        setState(() {
-          if (_hasAiContent &&
-              _aiContentStartIndex >= 0 &&
-              _aiContentEndIndex >= 0) {
-            // Replace existing AI content
-            final beforeAi =
-                _contentController.text.substring(0, _aiContentStartIndex);
-            final afterAi =
-                _contentController.text.substring(_aiContentEndIndex);
-            _contentController.text = beforeAi +
-                '\n\n[AI Response]\n' +
-                responseText +
-                '\n[End AI Response]\n' +
-                afterAi;
-          } else {
-            // Add new AI content
-            _aiContentStartIndex = _contentController.text.length;
-            _contentController.text +=
-                '\n\n[AI Response]\n$responseText\n[End AI Response]';
-            _aiContentEndIndex = _contentController.text.length;
-            _hasAiContent = true;
-          }
-          _isEdited = true;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        _showError('AI processing failed: ${e.toString()}');
-      }
-    } finally {
-      setState(() => _isAiProcessing = false);
-    }
-  }
-
-  void _showAiPromptDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            const Text('Chat with AI'),
-            if (_hasAiContent) ...[
-              const SizedBox(width: 8),
-              Text(
-                '()',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey,
-                    ),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _handleBack();
+      },
+      child: Scaffold(
+        backgroundColor: background,
+        appBar: AppBar(
+          backgroundColor: background,
+          surfaceTintColor: Colors.transparent,
+          iconTheme: IconThemeData(color: onBackground),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_rounded),
+            onPressed: _handleBack,
+          ),
+          actions: [
+            if (_isAiProcessing)
+              const Padding(
+                padding: EdgeInsets.all(14),
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else
+              IconButton(
+                icon: const Icon(Icons.auto_awesome_rounded),
+                tooltip: 'AI assistant',
+                color: onBackground,
+                onPressed: _openAiSheet,
               ),
-            ],
+            IconButton(
+              icon: Icon(_isPinned
+                  ? Icons.push_pin_rounded
+                  : Icons.push_pin_outlined),
+              tooltip: _isPinned ? 'Unpin' : 'Pin',
+              color: onBackground,
+              onPressed: () => setState(() {
+                _isPinned = !_isPinned;
+                _isEdited = true;
+              }),
+            ),
+            PopupMenuButton<String>(
+              iconColor: onBackground,
+              onSelected: (value) {
+                switch (value) {
+                  case 'share':
+                    _shareAsText();
+                  case 'nearby':
+                    _shareNearby();
+                  case 'delete':
+                    _confirmDelete();
+                }
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'share',
+                  child: ListTile(
+                    leading: Icon(Icons.ios_share_rounded),
+                    title: Text('Share'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'nearby',
+                  child: ListTile(
+                    leading: Icon(Icons.wifi_tethering_rounded),
+                    title: Text('Send to nearby'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                if (!_isNew)
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: ListTile(
+                      leading: Icon(Icons.delete_outline_rounded),
+                      title: Text('Delete'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: FilledButton(
+                onPressed: _isSaving ? null : _onSavePressed,
+                child: _isSaving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Save'),
+              ),
+            ),
           ],
         ),
-        content: TextField(
-          controller: _promptController,
-          decoration: InputDecoration(
-            hintText: _hasAiContent
-                ? 'Enter prompt...'
-                : '(e.g., "explain this note")',
+        body: SafeArea(
+          child: Column(
+            children: [
+              if (_isRecording) _recordingBanner(scheme),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+                  children: [
+                    _titleField(titleColor, onBackground),
+                    if (_images.isNotEmpty) _imageStrip(),
+                    _contentField(contentColor, onBackground),
+                    if (_drawings.isNotEmpty) _drawingCard(scheme, onBackground),
+                    if (_audioRecordings.isNotEmpty) _recordingsList(onBackground),
+                  ],
+                ),
+              ),
+              _toolbar(onBackground, background),
+            ],
           ),
-          maxLines: 3,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+      ),
+    );
+  }
+
+  Widget _recordingBanner(ColorScheme scheme) {
+    final m = _recordElapsed.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = _recordElapsed.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return Container(
+      width: double.infinity,
+      color: scheme.errorContainer,
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      child: Row(
+        children: [
+          Icon(Icons.fiber_manual_record_rounded,
+              color: scheme.error, size: 16),
+          const SizedBox(width: 8),
+          Text('Recording  $m:$s',
+              style: TextStyle(color: scheme.onErrorContainer)),
+          const Spacer(),
+          TextButton(onPressed: _toggleRecording, child: const Text('Stop')),
+        ],
+      ),
+    );
+  }
+
+  Widget _titleField(Color titleColor, Color onBackground) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _titleController,
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w700,
+              color: titleColor,
+            ),
+            maxLines: null,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: InputDecoration(
+              hintText: 'Title',
+              border: InputBorder.none,
+              filled: false,
+              isCollapsed: true,
+              hintStyle: TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w700,
+                color: onBackground.withValues(alpha: 0.4),
+              ),
+            ),
           ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _processAiCommand(_promptController.text);
-              _promptController.clear();
-            },
-            child: Text(_hasAiContent ? 'Rewrite' : 'Send'),
+        ),
+        IconButton(
+          icon: const Icon(Icons.format_color_text_rounded),
+          color: onBackground.withValues(alpha: 0.7),
+          tooltip: 'Title colour',
+          onPressed: () => _showTextColorPicker(isTitle: true),
+        ),
+      ],
+    );
+  }
+
+  Widget _contentField(Color contentColor, Color onBackground) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _contentController,
+              maxLines: null,
+              textCapitalization: TextCapitalization.sentences,
+              keyboardType: TextInputType.multiline,
+              style: TextStyle(fontSize: 16, height: 1.5, color: contentColor),
+              decoration: InputDecoration(
+                hintText: 'Start writing…',
+                border: InputBorder.none,
+                filled: false,
+                isCollapsed: true,
+                hintStyle: TextStyle(
+                  fontSize: 16,
+                  color: onBackground.withValues(alpha: 0.4),
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.format_color_text_rounded),
+            color: onBackground.withValues(alpha: 0.7),
+            tooltip: 'Text colour',
+            onPressed: () => _showTextColorPicker(isTitle: false),
           ),
         ],
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final textColor = _getTextColor(context);
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final backgroundColor = isDarkMode
-        ? Theme.of(context).colorScheme.background
-        : Color(
-            int.parse(_selectedColor.substring(1, 7), radix: 16) + 0xFF000000);
-
-    return WillPopScope(
-      onWillPop: _onWillPop,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Note'),
-          actions: [
-            if (_isAiProcessing)
-              const Center(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16.0),
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              ),
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              child: ElevatedButton.icon(
-                icon: const Text(
-                  'AI',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                label: const Icon(Icons.auto_awesome, size: 18),
-                onPressed: _showAiPromptDialog,
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                ),
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.wifi_tethering),
-              onPressed: _shareWithNearby,
-              tooltip: 'Share with nearby devices',
-            ),
-            if (widget.note != null)
-              IconButton(
-                icon: const Icon(Icons.delete_outline),
-                onPressed: _showDeleteDialog,
-                tooltip: 'Delete note',
-              ),
-            IconButton(
-              icon: const Icon(Icons.save),
-              onPressed: _isSaving ? null : _saveNote,
-            ),
-            IconButton(
-              icon: const Icon(Icons.share),
-              onPressed: () {
-                final text =
-                    '${_titleController.text}\n\n${_contentController.text}';
-                Share.share(text);
-              },
-            ),
-          ],
-        ),
-        body: SafeArea(
-          child: Container(
-            color: backgroundColor,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  Expanded(
-                    child: _buildMainContent(textColor),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.add_photo_alternate_rounded),
-                          onPressed: _pickImage,
-                          color: isDarkMode ? Colors.white : Colors.black87,
-                          tooltip: 'Add Image',
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.color_lens_rounded),
-                          onPressed: _showColorPicker,
-                          color: isDarkMode ? Colors.white : Colors.black87,
-                          tooltip: 'Change Note Color',
-                        ),
-                        IconButton(
-                          icon: Icon(
-                            _isRecording
-                                ? Icons.stop_rounded
-                                : Icons.mic_rounded,
-                            color: _isRecording
-                                ? Colors.red
-                                : (isDarkMode ? Colors.white : Colors.black87),
-                          ),
-                          onPressed: _toggleRecording,
-                          tooltip:
-                              _isRecording ? 'Stop Recording' : 'Record Audio',
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.draw_rounded),
-                          onPressed: _openDrawingScreen,
-                          color: isDarkMode ? Colors.white : Colors.black87,
-                          tooltip: 'Add Drawing',
-                        ),
-                      ],
+  Widget _imageStrip() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: SizedBox(
+        height: 110,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: _images.length,
+          separatorBuilder: (_, _) => const SizedBox(width: 10),
+          itemBuilder: (context, index) {
+            final path = _images[index];
+            return Stack(
+              children: [
+                GestureDetector(
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => ImagePreview(imagePath: path),
                     ),
                   ),
-                ],
+                  child: Hero(
+                    tag: 'image-$path',
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(14),
+                      child: Image.file(
+                        File(path),
+                        width: 110,
+                        height: 110,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => Container(
+                          width: 110,
+                          height: 110,
+                          color: Colors.black12,
+                          child: const Icon(Icons.broken_image_outlined),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: _removeBadge(() => setState(() {
+                        _images.removeAt(index);
+                        _isEdited = true;
+                      })),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _removeBadge(VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: const BoxDecoration(
+          color: Colors.black54,
+          shape: BoxShape.circle,
+        ),
+        padding: const EdgeInsets.all(4),
+        child: const Icon(Icons.close_rounded, size: 16, color: Colors.white),
+      ),
+    );
+  }
+
+  Widget _drawingCard(ColorScheme scheme, Color onBackground) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: _previewDrawing,
+          child: Column(
+            children: [
+              SizedBox(
+                height: 140,
+                width: double.infinity,
+                child: CustomPaint(painter: StrokePainter(strokes: _drawings)),
               ),
-            ),
+              Container(
+                color: scheme.surfaceContainerHighest,
+                child: Row(
+                  children: [
+                    const SizedBox(width: 12),
+                    const Icon(Icons.draw_rounded, size: 18),
+                    const SizedBox(width: 8),
+                    const Expanded(child: Text('Sketch')),
+                    IconButton(
+                      icon: const Icon(Icons.edit_rounded),
+                      tooltip: 'Edit sketch',
+                      onPressed: _openDrawing,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline_rounded),
+                      tooltip: 'Remove sketch',
+                      onPressed: () => setState(() {
+                        _drawings = [];
+                        _isEdited = true;
+                      }),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 
+  Widget _recordingsList(Color onBackground) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Recordings',
+              style: TextStyle(
+                  color: onBackground, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          for (var i = 0; i < _audioRecordings.length; i++)
+            AudioPlayerWidget(
+              key: ValueKey(_audioRecordings[i]),
+              audioPath: _audioRecordings[i],
+              audioService: _audioService,
+              index: i,
+              onDelete: () => setState(() {
+                _audioRecordings.removeAt(i);
+                _isEdited = true;
+              }),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _toolbar(Color onBackground, Color background) {
+    final barColor = Color.alphaBlend(
+      Theme.of(context).colorScheme.surfaceTint.withValues(alpha: 0.04),
+      background,
+    );
+    return Material(
+      color: barColor,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _toolButton(Icons.add_photo_alternate_outlined, 'Add image',
+                  onBackground, _pickImage),
+              _toolButton(Icons.palette_outlined, 'Note colour', onBackground,
+                  _showNoteColorPicker),
+              _toolButton(
+                _isRecording ? Icons.stop_circle_rounded : Icons.mic_none_rounded,
+                _isRecording ? 'Stop' : 'Record',
+                _isRecording ? Theme.of(context).colorScheme.error : onBackground,
+                _toggleRecording,
+              ),
+              _toolButton(Icons.draw_outlined, 'Sketch', onBackground,
+                  _openDrawing),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _toolButton(
+      IconData icon, String tooltip, Color color, VoidCallback onTap) {
+    return IconButton(
+      icon: Icon(icon),
+      color: color,
+      tooltip: tooltip,
+      iconSize: 26,
+      onPressed: onTap,
+    );
+  }
+
   @override
   void dispose() {
-    _promptController.dispose();
+    _recordTimer?.cancel();
+    _audioService.dispose();
     _titleController.dispose();
     _contentController.dispose();
-    _colorPickerController.dispose();
     super.dispose();
   }
 }

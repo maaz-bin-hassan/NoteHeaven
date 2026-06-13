@@ -5,271 +5,107 @@ import 'package:flutter/foundation.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:uuid/uuid.dart';
-import '../models/note.dart';
 
+/// Low-level WebSocket transport for peer-to-peer note sharing on the LAN.
+///
+/// Payloads are opaque JSON maps; encoding/decoding of note content and media
+/// lives in [NoteShareManager].
 class NetworkService {
   static final NetworkService _instance = NetworkService._internal();
   factory NetworkService() => _instance;
   NetworkService._internal();
 
-  final String _deviceId = const Uuid().v4();
+  final String deviceId = const Uuid().v4();
+  static const _port = 8080;
 
-  IOWebSocketChannel? _channel;
-  StreamController<Note>? _noteStreamController;
   HttpServer? _server;
-  final _port = 8080;
-  Timer? _reconnectionTimer;
+  final _incomingController =
+      StreamController<Map<String, dynamic>>.broadcast();
 
-  final _noteReceiveController = StreamController<Note>.broadcast();
-  Stream<Note> get noteReceiveStream => _noteReceiveController.stream;
-
-  Stream<Note> get noteStream {
-    _noteStreamController ??= StreamController<Note>.broadcast();
-    return _noteStreamController!.stream;
-  }
+  /// Incoming shared-note payloads from other devices.
+  Stream<Map<String, dynamic>> get incomingNotes =>
+      _incomingController.stream;
 
   Future<void> startServer() async {
+    if (_server != null) return;
     try {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, _port);
-      debugPrint('WebSocket server listening on port $_port');
-
+      debugPrint('Share server listening on port $_port');
       _server!.transform(WebSocketTransformer()).listen(
-        (WebSocket webSocket) {
-          debugPrint('Client connected');
-          _handleIncomingConnection(webSocket);
-        },
-        onError: (e) => debugPrint('Server error: $e'),
-      );
+            _handleConnection,
+            onError: (e) => debugPrint('Share server error: $e'),
+          );
     } catch (e) {
-      debugPrint('Error starting server: $e');
+      debugPrint('Error starting share server: $e');
     }
   }
 
-  Future<void> startListening() async {
-    await _connectToServer();
-  }
-
-  Future<void> _connectToServer() async {
-    if (_channel != null) {
-      await _channel?.sink.close();
-      _channel = null;
-    }
-
-    try {
-      final ip = await _getLocalIP();
-      if (ip == null) return;
-
-      final wsUrl = 'ws://$ip:$_port';
-      debugPrint('Connecting to WebSocket at $wsUrl');
-
-      _channel = IOWebSocketChannel.connect(
-        wsUrl,
-        connectTimeout: const Duration(seconds: 5),
-      );
-
-      _channel!.stream.listen(
-        (message) {
-          try {
-            final noteJson = json.decode(message);
-            final note = Note.fromJson(noteJson);
-            _noteStreamController?.add(note);
-            debugPrint('Received note: ${note.title}');
-          } catch (e) {
-            debugPrint('Error parsing received note: $e');
+  void _handleConnection(WebSocket socket) {
+    socket.listen(
+      (message) {
+        try {
+          final data = json.decode(message as String) as Map<String, dynamic>;
+          if (data['deviceId'] == deviceId) return; // ignore our own
+          if (data['type'] == 'note_share_request' && data['note'] is Map) {
+            _incomingController
+                .add(Map<String, dynamic>.from(data['note'] as Map));
           }
-        },
-        onError: (error) {
-          debugPrint('WebSocket error: $error');
-          _scheduleReconnection();
-        },
-        onDone: () {
-          debugPrint('WebSocket connection closed');
-          _scheduleReconnection();
-        },
-      );
-    } catch (e) {
-      debugPrint('Error connecting to WebSocket: $e');
-      _scheduleReconnection();
-    }
-  }
-
-  void _scheduleReconnection() {
-    _reconnectionTimer?.cancel();
-    _reconnectionTimer = Timer(const Duration(seconds: 5), () {
-      debugPrint('Attempting to reconnect...');
-      _connectToServer();
-    });
-  }
-
-  Future<String?> _getLocalIP() async {
-    try {
-      final networkInfo = NetworkInfo();
-      final wifiIP = await networkInfo.getWifiIP();
-      debugPrint('WiFi IP: $wifiIP');
-      return wifiIP;
-    } catch (e) {
-      debugPrint('Error getting WiFi IP: $e');
-      try {
-        final interfaces = await NetworkInterface.list(
-          type: InternetAddressType.IPv4,
-          includeLinkLocal: true,
-        );
-        for (var interface in interfaces) {
-          for (var addr in interface.addresses) {
-            if (!addr.isLoopback) {
-              debugPrint('Using network interface IP: ${addr.address}');
-              return addr.address;
-            }
-          }
+        } catch (e) {
+          debugPrint('Error parsing incoming message: $e');
         }
-      } catch (e) {
-        debugPrint('Error getting network interface IP: $e');
-      }
-      return null;
-    }
+      },
+      onError: (e) => debugPrint('Share socket error: $e'),
+      cancelOnError: true,
+    );
   }
 
-  Future<void> shareNote(Note note, String targetIp) async {
-    try {
-      final ownIp = await _getLocalIP();
-      if (ownIp == targetIp) {
-        throw Exception('Cannot share note to own device');
-      }
-
-      final wsUrl = 'ws://$targetIp:$_port';
-      final channel = IOWebSocketChannel.connect(wsUrl);
-
-      final request = {
-        'type': 'note_share_request',
-        'note': note.toJson(),
-        'sender': await _getLocalIP(),
-        'deviceId': _deviceId,
-      };
-
-      channel.sink.add(json.encode(request));
-      debugPrint('Share request sent to $targetIp');
-
-      await Future.delayed(const Duration(seconds: 1));
-      channel.sink.close();
-    } catch (e) {
-      debugPrint('Error sharing note: $e');
-      rethrow;
-    }
-  }
-
-  Future<void> acceptNote(Note note, String senderIp) async {
+  /// Sends an already-encoded note payload to [targetIp].
+  Future<void> sendNote(Map<String, dynamic> notePayload, String targetIp) async {
     IOWebSocketChannel? channel;
     try {
-      final wsUrl = 'ws://$senderIp:$_port';
       channel = IOWebSocketChannel.connect(
-        wsUrl,
+        'ws://$targetIp:$_port',
         connectTimeout: const Duration(seconds: 5),
       );
-
-      final response = {
-        'type': 'note_share_accepted',
-        'note': note.toJson(),
-      };
-
-      await channel.ready.timeout(
-        const Duration(seconds: 5),
-        onTimeout: () => throw TimeoutException('Connection timed out'),
-      );
-
-      channel.sink.add(json.encode(response));
-      debugPrint('Acceptance sent to $senderIp');
-
-      bool confirmed = false;
-      await for (var message in channel.stream.timeout(
-        const Duration(seconds: 5),
-        onTimeout: (sink) => sink.close(),
-      )) {
-        final data = json.decode(message);
-        if (data['type'] == 'note_share_confirmed') {
-          confirmed = true;
-          break;
-        }
-      }
-
-      if (!confirmed) {
-        throw Exception('Note acceptance was not confirmed');
-      }
-    } catch (e) {
-      debugPrint('Error accepting note: $e');
-      rethrow;
+      await channel.ready.timeout(const Duration(seconds: 5));
+      channel.sink.add(json.encode({
+        'type': 'note_share_request',
+        'note': notePayload,
+        'deviceId': deviceId,
+      }));
+      // Give the frame time to flush before closing.
+      await Future.delayed(const Duration(milliseconds: 600));
     } finally {
       await channel?.sink.close();
     }
   }
 
-  Future<void> broadcastNote(Note note) async {
+  Future<String?> getLocalIP() async {
     try {
-      debugPrint('Preparing note for sharing...');
-      final localIP = await _getLocalIP();
-      if (localIP == null) {
-        debugPrint('Could not get local IP');
-        return;
-      }
-
-      final noteJson = json.encode(note.toJson());
-      debugPrint('Note encoded successfully');
-
-      final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-      socket.broadcastEnabled = true;
-
-      final List<int> dataToSend = utf8.encode(noteJson);
-
-      socket.send(
-        dataToSend,
-        InternetAddress('255.255.255.255'),
-        _port,
-      );
-
-      debugPrint('Note broadcast to local network');
-
-      await Future.delayed(const Duration(seconds: 1));
-      socket.close();
-    } catch (e, stack) {
-      debugPrint('Error sharing note: $e');
-      debugPrint('Stack trace: $stack');
+      final wifiIP = await NetworkInfo().getWifiIP();
+      if (wifiIP != null && wifiIP.isNotEmpty) return wifiIP;
+    } catch (e) {
+      debugPrint('getWifiIP failed: $e');
     }
-  }
-
-  void _handleIncomingConnection(WebSocket webSocket) {
-    webSocket.listen(
-      (message) {
-        try {
-          final Map<String, dynamic> data = json.decode(message);
-
-          if (data['deviceId'] == _deviceId) {
-            debugPrint('Ignoring message from own device');
-            return;
-          }
-
-          if (data['type'] == 'note_share_request') {
-            final note = Note.fromJson(data['note']);
-            _noteReceiveController.add(note);
-          } else if (data['type'] == 'note_share_accepted') {
-            final note = Note.fromJson(data['note']);
-            _noteStreamController?.add(note);
-          }
-        } catch (e) {
-          debugPrint('Error parsing received message: $e');
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLinkLocal: true,
+      );
+      for (final interface in interfaces) {
+        for (final addr in interface.addresses) {
+          if (!addr.isLoopback) return addr.address;
         }
-      },
-      onError: (e) => debugPrint('WebSocket error: $e'),
-      onDone: () => debugPrint('Client disconnected'),
-    );
+      }
+    } catch (e) {
+      debugPrint('NetworkInterface.list failed: $e');
+    }
+    return null;
   }
 
   void dispose() {
-    _reconnectionTimer?.cancel();
-    _channel?.sink.close();
-    _server?.close();
-    _noteStreamController?.close();
-    _noteReceiveController.close();
-    _channel = null;
+    _server?.close(force: true);
     _server = null;
-    _noteStreamController = null;
+    _incomingController.close();
   }
 }

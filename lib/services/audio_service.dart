@@ -1,146 +1,93 @@
-import 'package:record/record.dart';
-import 'package:audioplayers/audioplayers.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:record/record.dart';
+import 'package:path_provider/path_provider.dart';
 
+/// Handles audio recording and coordinates playback so that only one clip
+/// plays at a time.
+///
+/// Recording into the app's private documents directory does NOT require the
+/// storage permission. The previous implementation also requested
+/// `Permission.storage`, which is permanently denied on Android 13+ and so
+/// silently blocked all recording on modern devices. We now rely solely on the
+/// recorder's own microphone-permission check.
 class AudioService {
-  final _audioRecorder = AudioRecorder();
-  final _audioPlayer = AudioPlayer();
+  final AudioRecorder _recorder = AudioRecorder();
   String? _currentRecordingPath;
-  bool _isRecording = false;
-  bool _isPlaying = false;
-  String? _currentlyPlayingPath;
 
-  AudioPlayer get player => _audioPlayer;
+  /// Id of the player widget that is currently allowed to play. Each
+  /// [AudioPlayerWidget] owns its own player and pauses itself when this
+  /// changes to another id, giving single-clip playback without the cross-talk
+  /// of a single shared player.
+  final ValueNotifier<int> activePlayerId = ValueNotifier<int>(-1);
+  int _idCounter = 0;
+  int nextPlayerId() => _idCounter++;
 
-  Future<bool> checkPermission() async {
-    final micStatus = await Permission.microphone.request();
-    final storageStatus = await Permission.storage.request();
-
-    return micStatus.isGranted && storageStatus.isGranted;
+  Future<bool> hasPermission() async {
+    try {
+      return await _recorder.hasPermission();
+    } catch (e) {
+      debugPrint('Mic permission check failed: $e');
+      return false;
+    }
   }
 
   Future<String?> startRecording() async {
     try {
-      if (kIsWeb) {
-        throw UnsupportedError(
-            'Audio recording is not supported on web platform');
+      if (kIsWeb) return null;
+      if (!await hasPermission()) return null;
+
+      final dir = await getApplicationDocumentsDirectory();
+      final recordingsDir = Directory('${dir.path}/recordings');
+      if (!await recordingsDir.exists()) {
+        await recordingsDir.create(recursive: true);
       }
 
-      if (await checkPermission()) {
-        await stopPlaying();
-
-        final dir = await getApplicationDocumentsDirectory();
-        final recordingsDir = Directory('${dir.path}/recordings');
-        if (!await recordingsDir.exists()) {
-          await recordingsDir.create(recursive: true);
-        }
-
-        _currentRecordingPath =
-            '${recordingsDir.path}/recording_${DateTime.now().millisecondsSinceEpoch}.m4a';
-
-        await _audioRecorder.start(
-          RecordConfig(
-            encoder: AudioEncoder.aacLc,
-            bitRate: 128000,
-            sampleRate: 44100,
-          ),
-          path: _currentRecordingPath!,
-        );
-
-        _isRecording = true;
-        return _currentRecordingPath;
-      }
+      final path =
+          '${recordingsDir.path}/rec_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          bitRate: 128000,
+          sampleRate: 44100,
+        ),
+        path: path,
+      );
+      _currentRecordingPath = path;
+      return path;
     } catch (e) {
+      debugPrint('Error starting recording: $e');
       _currentRecordingPath = null;
-      _isRecording = false;
-      rethrow;
+      return null;
     }
-    return null;
   }
 
   Future<String?> stopRecording() async {
     try {
-      if (!_isRecording) return null;
-
-      await _audioRecorder.stop();
-      _isRecording = false;
-
-      // Verify the file exists
-      if (_currentRecordingPath != null &&
-          File(_currentRecordingPath!).existsSync()) {
-        return _currentRecordingPath;
+      final path = await _recorder.stop();
+      final result = path ?? _currentRecordingPath;
+      _currentRecordingPath = null;
+      if (result != null && File(result).existsSync()) {
+        return result;
       }
     } catch (e) {
-      _isRecording = false;
-      rethrow;
+      debugPrint('Error stopping recording: $e');
     }
     return null;
   }
 
-  Future<void> playRecording(String path) async {
+  Future<bool> get isRecording async {
     try {
-      // Stop any currently playing audio before playing new one
-      if (_isPlaying && _currentlyPlayingPath != path) {
-        await stopPlaying();
-      }
-
-      if (!File(path).existsSync()) {
-        throw Exception('Audio file not found');
-      }
-
-      await _audioPlayer.play(DeviceFileSource(path));
-      _isPlaying = true;
-      _currentlyPlayingPath = path;
-
-      _audioPlayer.onPlayerComplete.listen((_) {
-        _isPlaying = false;
-        _currentlyPlayingPath = null;
-      });
-    } catch (e) {
-      _isPlaying = false;
-      _currentlyPlayingPath = null;
-      rethrow;
+      return await _recorder.isRecording();
+    } catch (_) {
+      return false;
     }
   }
-
-  Future<void> stopPlaying() async {
-    try {
-      await _audioPlayer.stop();
-      _isPlaying = false;
-      _currentlyPlayingPath = null;
-    } catch (e) {
-      rethrow;
-    }
-  }
-
-  Future<void> deleteRecording(String path) async {
-    try {
-      final file = File(path);
-      if (await file.exists()) {
-        await file.delete();
-      }
-    } catch (e) {
-      rethrow;
-    }
-  }
-
-  bool get isRecording => _isRecording;
-  bool get isPlaying => _isPlaying;
-  String? get currentlyPlayingPath => _currentlyPlayingPath;
 
   Future<void> dispose() async {
     try {
-      if (_isRecording) {
-        await stopRecording();
-      }
-      if (_isPlaying) {
-        await stopPlaying();
-      }
-      await _audioRecorder.dispose();
-      await _audioPlayer.dispose();
-    } catch (e) {}
+      await _recorder.dispose();
+    } catch (_) {}
+    activePlayerId.dispose();
   }
 }
