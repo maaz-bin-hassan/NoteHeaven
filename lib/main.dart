@@ -5,7 +5,6 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'screens/home_screen.dart';
 import 'services/note_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
 
 extension BuildContextExtensions on BuildContext {
   _MyAppState? findAppState() {
@@ -14,14 +13,9 @@ extension BuildContextExtensions on BuildContext {
 }
 
 void main() async {
-  await dotenv.load(fileName: '.env');
   WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: '.env');
   runApp(const MyApp());
-  final model =
-      GenerativeModel(model: 'gemini-pro', apiKey: '${dotenv.env["APIKEY"]}');
-  final content = [Content.text('explain my note topics.')];
-  final response = await model.generateContent(content);
-  print(response.text);
 }
 
 class MyApp extends StatefulWidget {
@@ -103,7 +97,7 @@ class _MyAppState extends State<MyApp> {
           selectedItemColor: Color(0xFF6B4EFF),
           unselectedItemColor: Colors.grey,
         ),
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           elevation: 4,
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -136,7 +130,7 @@ class _MyAppState extends State<MyApp> {
         iconTheme: const IconThemeData(
           color: Colors.white,
         ),
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           elevation: 4,
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),

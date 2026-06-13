@@ -15,8 +15,7 @@ import '../widgets/image_preview.dart';
 import 'drawing_preview_screen.dart';
 import '../services/note_share_manager.dart';
 import 'package:flutter/foundation.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+import '../services/deepseek_service.dart';
 
 class NoteEditorScreen extends StatefulWidget {
   final Note? note;
@@ -53,7 +52,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
   bool _isDrawingVisible = false;
   final _shareManager = NoteShareManager();
 
-  late GenerativeModel _aiModel;
+  final DeepSeekService _deepSeekService = DeepSeekService();
   bool _isAiProcessing = false;
   final TextEditingController _promptController = TextEditingController();
 
@@ -88,15 +87,6 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
 
     _titleController.addListener(_markAsEdited);
     _contentController.addListener(_markAsEdited);
-
-    _initAiModel();
-  }
-
-  void _initAiModel() {
-    _aiModel = GenerativeModel(
-      model: 'gemini-pro',
-      apiKey: '${dotenv.env["APIKEY"]}',
-    );
   }
 
   void _markAsEdited() {
@@ -722,10 +712,12 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
     setState(() => _isAiProcessing = true);
     try {
       final currentText = _contentController.text;
-      final content = [Content.text('$prompt\n\nContext: $currentText')];
-
-      final response = await _aiModel.generateContent(content);
-      if (response.text != null && mounted) {
+      final responseText = await _deepSeekService.chat(
+        userMessage: '$prompt\n\nContext: $currentText',
+        systemMessage:
+            'You are a helpful writing assistant inside a note-taking app.',
+      );
+      if (mounted) {
         setState(() {
           if (_hasAiContent &&
               _aiContentStartIndex >= 0 &&
@@ -737,14 +729,14 @@ class _NoteEditorScreenState extends State<NoteEditorScreen>
                 _contentController.text.substring(_aiContentEndIndex);
             _contentController.text = beforeAi +
                 '\n\n[AI Response]\n' +
-                response.text! +
+                responseText +
                 '\n[End AI Response]\n' +
                 afterAi;
           } else {
             // Add new AI content
             _aiContentStartIndex = _contentController.text.length;
             _contentController.text +=
-                '\n\n[AI Response]\n' + response.text! + '\n[End AI Response]';
+                '\n\n[AI Response]\n$responseText\n[End AI Response]';
             _aiContentEndIndex = _contentController.text.length;
             _hasAiContent = true;
           }
