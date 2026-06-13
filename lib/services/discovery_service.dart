@@ -34,7 +34,9 @@ class DiscoveryService {
         _handleDiscoveryMessage(event);
       });
 
-      _startBroadcasting();
+      // We listen and respond to discovery probes continuously (cheap), but
+      // only actively broadcast while searching for peers (see findPeers) to
+      // avoid draining the battery with a packet every second.
       _startPeerCleanup();
     } catch (e) {
       debugPrint('Error starting discovery: $e');
@@ -127,27 +129,15 @@ class DiscoveryService {
     });
   }
 
+  /// Actively broadcasts for a short window and returns every peer that
+  /// responds. Broadcasting only happens here, not continuously.
   Future<List<String>> findPeers() async {
-    final completer = Completer<List<String>>();
-
-    // Listen for peer updates
-    late StreamSubscription subscription;
-    subscription = peerStream.listen((peers) {
-      if (peers.isNotEmpty) {
-        subscription.cancel();
-        completer.complete(peers);
-      }
-    });
-
-    // Set timeout
-    Timer(const Duration(seconds: 3), () {
-      subscription.cancel();
-      if (!completer.isCompleted) {
-        completer.complete(_getFilteredPeers());
-      }
-    });
-
-    return completer.future;
+    if (!_isRunning) await startDiscovery();
+    _discoveredPeers.clear();
+    _startBroadcasting();
+    await Future.delayed(const Duration(seconds: 3));
+    _broadcastTimer?.cancel();
+    return _getFilteredPeers();
   }
 
   void dispose() {
