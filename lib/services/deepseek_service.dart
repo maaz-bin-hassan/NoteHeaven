@@ -4,57 +4,57 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 
-/// Client for the NoteHeaven AI backend proxy.
+/// Client for NoteHeaven's backend AI proxy.
 ///
-/// The app NEVER holds the DeepSeek API key. It talks only to our own proxy
-/// (`AI_PROXY_URL`, see ./server), authenticating with a low-sensitivity app
-/// key (`AI_APP_KEY`). The proxy forwards the request to DeepSeek using the
-/// real secret, which lives only on the server.
+/// The app NEVER holds the DeepSeek API key. It calls our own proxy
+/// (`POST {AI_PROXY_URL}/v1/ai/chat`) which adds the secret server-side. The
+/// app only carries:
+///   * `AI_PROXY_URL` — where the proxy lives (unset ⇒ AI disabled).
+///   * `AI_APP_KEY`   — low-sensitivity shared key sent as `x-app-key`.
 ///
-/// The feature degrades gracefully: when no proxy URL is configured,
-/// [isConfigured] is false and the UI hides/disables the AI affordances rather
-/// than throwing.
+/// The class keeps its old name and `chat`/`isConfigured` surface so existing
+/// callers (editor, settings) are unaffected; only the transport changed.
 class DeepSeekService {
-  static const _chatPath = '/v1/ai/chat';
-  static const _timeout = Duration(seconds: 30);
+  static const _timeout = Duration(seconds: 35);
 
   static final DeepSeekService _instance = DeepSeekService._internal();
   factory DeepSeekService() => _instance;
   DeepSeekService._internal();
 
-  /// Proxy base URL, trailing slash stripped. Null when unset/blank.
-  String? get _baseUrl {
+  String? get _proxyUrl {
     if (!dotenv.isInitialized) return null;
-    final url = dotenv.env['AI_PROXY_URL']?.trim();
-    if (url == null || url.isEmpty) return null;
-    return url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+    final raw = dotenv.env['AI_PROXY_URL']?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    // Normalise away a trailing slash so we can append the path cleanly.
+    return raw.endsWith('/') ? raw.substring(0, raw.length - 1) : raw;
   }
 
-  /// Shared client key sent as `x-app-key`. Optional (the proxy may run open in
-  /// local dev), so a null/blank value simply omits the header.
   String? get _appKey {
     if (!dotenv.isInitialized) return null;
-    final key = dotenv.env['AI_APP_KEY']?.trim();
-    return (key == null || key.isEmpty) ? null : key;
+    final raw = dotenv.env['AI_APP_KEY']?.trim();
+    return (raw == null || raw.isEmpty) ? null : raw;
   }
 
-  bool get isConfigured => _baseUrl != null;
+  /// AI is available once a proxy URL is configured.
+  bool get isConfigured => _proxyUrl != null;
 
   Future<String> chat({
     required String userMessage,
     String? systemMessage,
   }) async {
-    final baseUrl = _baseUrl;
-    if (baseUrl == null) {
+    final proxyUrl = _proxyUrl;
+    if (proxyUrl == null) {
       throw const AiUnconfiguredException();
     }
 
+    final uri = Uri.parse('$proxyUrl/v1/ai/chat');
     final appKey = _appKey;
+
     late final http.Response response;
     try {
       response = await http
           .post(
-            Uri.parse('$baseUrl$_chatPath'),
+            uri,
             headers: {
               'Content-Type': 'application/json',
               if (appKey != null) 'x-app-key': appKey,
@@ -70,25 +70,44 @@ class DeepSeekService {
       throw Exception('Could not reach the AI service. Check your connection.');
     }
 
-    if (response.statusCode == 401 || response.statusCode == 403) {
-      throw Exception('AI request was not authorized.');
-    }
-    if (response.statusCode == 429) {
-      throw Exception('Too many AI requests. Please wait a moment and try again.');
-    }
-    if (response.statusCode != 200) {
-      throw Exception('AI service error (${response.statusCode}).');
+    Map<String, dynamic>? json;
+    try {
+      json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    } catch (_) {
+      json = null;
     }
 
-    final data =
-        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-    final content = data['content'] as String?;
-    if (content == null || content.trim().isEmpty) {
-      throw Exception('The AI returned an empty response.');
+    if (response.statusCode == 200) {
+      final content = json?['content'] as String?;
+      if (content == null || content.trim().isEmpty) {
+        throw Exception('The AI returned an empty response.');
+      }
+      return content.trim();
     }
 
-    debugPrint('AI proxy response received (${content.length} chars)');
-    return content.trim();
+    // The proxy returns { error: { code, message } } with a user-safe message.
+    final serverMessage = (json?['error'] as Map<String, dynamic>?)?['message'];
+    if (serverMessage is String && serverMessage.isNotEmpty) {
+      throw Exception(serverMessage);
+    }
+    throw Exception(_fallbackMessage(response.statusCode));
+  }
+
+  String _fallbackMessage(int status) {
+    switch (status) {
+      case 401:
+        return 'AI request rejected. Check the app key.';
+      case 413:
+        return 'That note is too long for the AI.';
+      case 429:
+        return 'The AI service is busy. Please try again shortly.';
+      case 502:
+      case 503:
+      case 504:
+        return 'The AI service is temporarily unavailable.';
+      default:
+        return 'AI request failed (status $status).';
+    }
   }
 }
 
