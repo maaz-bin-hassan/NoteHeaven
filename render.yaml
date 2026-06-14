@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: noteheaven-ai-proxy
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: APP_API_KEYS
+        sync: false
