@@ -340,7 +340,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
 
   void _openAiSheet() {
     if (!_deepSeek.isConfigured) {
-      _showMessage('AI is disabled — set DEEPSEEK_API_KEY to enable it');
+      _showMessage('AI is disabled — set AI_PROXY_URL to enable it');
       return;
     }
     final promptController = TextEditingController();

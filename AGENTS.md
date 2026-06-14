@@ -7,12 +7,14 @@ optional DeepSeek-powered writing assistant.
 ## Setup
 
 1. Install Flutter SDK `^3.12.2` (developed against Flutter 3.44 / Dart 3.12).
-2. (Optional) Enable AI by copying the environment config and adding a key:
+2. (Optional) Enable AI. The DeepSeek key lives in the backend proxy
+   ([`server/`](server/)), never in the app. Point the app at the proxy:
    ```bash
    cp .env.example .env
-   # then set DEEPSEEK_API_KEY in .env
+   # then set AI_PROXY_URL (and AI_APP_KEY) in .env
    ```
-   The app runs fully without a key — AI features simply stay disabled.
+   The app runs fully without the proxy configured — AI features simply stay
+   disabled. To run the proxy locally, see [`server/README.md`](server/README.md).
 3. Install dependencies and run:
    ```bash
    flutter pub get
@@ -21,11 +23,14 @@ optional DeepSeek-powered writing assistant.
 
 `.env` is loaded at startup via `flutter_dotenv` and is listed as a Flutter
 asset, so the file must exist at build time (`cp .env.example .env` is enough —
-an empty key is fine). Never commit `.env`; only commit `.env.example`.
+empty values are fine). Never commit `.env`; only commit `.env.example`.
 
-> **Security:** bundling an API key as an asset means it ships inside the
-> APK/AAB and can be extracted. For a real production release, proxy DeepSeek
-> calls through a backend you control and have the app call that instead.
+> **Security:** the app `.env` holds only the proxy URL and a low-sensitivity
+> app key — never the DeepSeek secret. That secret lives only in the backend
+> proxy ([`server/`](server/)), which the app calls instead of DeepSeek
+> directly. An app key shipped in the binary can still be extracted, so it only
+> deters casual abuse; add real user auth / device attestation for stronger
+> protection.
 
 ## Project layout
 
@@ -60,9 +65,10 @@ test/                           # Unit tests for the model and palette
   (mic permission only — no storage permission, which is denied on Android 13+)
   and a `ValueNotifier` that coordinates single-clip playback across
   `AudioPlayerWidget`s (each owns its own `AudioPlayer`).
-- **DeepSeekService** (`services/deepseek_service.dart`): OpenAI-compatible chat
-  client. Degrades gracefully via `isConfigured`; model is overridable with
-  `DEEPSEEK_MODEL` (default `deepseek-chat`).
+- **DeepSeekService** (`services/deepseek_service.dart`): client for the backend
+  AI proxy (`POST {AI_PROXY_URL}/v1/ai/chat`, authenticated with the `x-app-key`
+  header). Degrades gracefully via `isConfigured`. The DeepSeek model is chosen
+  server-side; the app never sees the API key.
 - **NetworkService / DiscoveryService / NoteShareManager**: LAN peer discovery
   (UDP) + transfer (WebSocket). Media is embedded as base64 so received notes
   reference files that exist locally; received notes get a fresh id.
@@ -89,10 +95,16 @@ services over duplicating persistence logic.
 
 ## Environment variables
 
+App (`.env`, bundled as a Flutter asset — no secrets):
+
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DEEPSEEK_API_KEY` | No | Enables the AI assistant. Without it, AI is disabled. |
-| `DEEPSEEK_MODEL` | No | Override the chat model (default `deepseek-chat`). |
+| `AI_PROXY_URL` | No | Base URL of the backend AI proxy. Unset → AI disabled. |
+| `AI_APP_KEY` | No | Sent as `x-app-key`; must match one of the server's `APP_API_KEYS`. |
+
+Backend (`server/.env` — holds the secret; see [`server/.env.example`](server/.env.example)):
+`DEEPSEEK_API_KEY` (required), `APP_API_KEYS` (required in production),
+`DEEPSEEK_MODEL`, plus rate-limit / input-size knobs.
 
 ## Commands
 

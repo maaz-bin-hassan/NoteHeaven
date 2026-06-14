@@ -69,7 +69,7 @@ class SettingsScreen extends StatelessWidget {
                   subtitle: Text(
                     aiConfigured
                         ? 'Writing assistant is ready to use in the editor.'
-                        : 'Add a DEEPSEEK_API_KEY to the app config to enable.',
+                        : 'Set AI_PROXY_URL in the app config to enable.',
                   ),
                 ),
               ),

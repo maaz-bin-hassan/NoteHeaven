@@ -38,20 +38,24 @@ tracking.
 git clone https://github.com/maaz-bin-hassan/NoteHeaven.git
 cd NoteHeaven
 
-# Optional: enable the AI assistant
-cp .env.example .env          # then add your DEEPSEEK_API_KEY
+# Optional: enable the AI assistant. The DeepSeek key lives in the backend
+# proxy (./server), never in the app — point the app at your proxy:
+cp .env.example .env          # then set AI_PROXY_URL (and AI_APP_KEY)
 
 flutter pub get
 flutter run
 ```
 
-> The app is fully functional without an API key — AI features simply stay
-> disabled.
+> The app is fully functional without the proxy configured — AI features simply
+> stay disabled. The DeepSeek API key never ships inside the app; deploy the
+> proxy in [`server/`](server/) and the app calls that. See
+> [`server/README.md`](server/README.md) to run it locally.
 
 ## 🛠 Tech
 
 Flutter • Material 3 • SQLite (`sqflite`) • `record` / `audioplayers` •
-`web_socket_channel` • DeepSeek (OpenAI-compatible API).
+`web_socket_channel` • DeepSeek via a Node/Express backend proxy
+([`server/`](server/)).
 
 See [`AGENTS.md`](AGENTS.md) for architecture and contributor conventions.
 

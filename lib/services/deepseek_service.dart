@@ -4,69 +4,65 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 
-/// Thin OpenAI-compatible client for DeepSeek chat completions.
+/// Client for the NoteHeaven AI backend proxy.
 ///
-/// The feature degrades gracefully: when no API key is configured,
+/// The app NEVER holds the DeepSeek API key. It talks only to our own proxy
+/// (`AI_PROXY_URL`, see ./server), authenticating with a low-sensitivity app
+/// key (`AI_APP_KEY`). The proxy forwards the request to DeepSeek using the
+/// real secret, which lives only on the server.
+///
+/// The feature degrades gracefully: when no proxy URL is configured,
 /// [isConfigured] is false and the UI hides/disables the AI affordances rather
 /// than throwing.
-///
-/// SECURITY NOTE: bundling the API key in the app's assets means anyone can
-/// extract it from the distributed APK/AAB. For a real production release the
-/// key should live behind a backend proxy you control, with the app calling
-/// that proxy instead of DeepSeek directly.
 class DeepSeekService {
-  static const _baseUrl = 'https://api.deepseek.com';
-  static const _defaultModel = 'deepseek-chat';
+  static const _chatPath = '/v1/ai/chat';
   static const _timeout = Duration(seconds: 30);
 
   static final DeepSeekService _instance = DeepSeekService._internal();
   factory DeepSeekService() => _instance;
   DeepSeekService._internal();
 
-  String? get _apiKey {
+  /// Proxy base URL, trailing slash stripped. Null when unset/blank.
+  String? get _baseUrl {
     if (!dotenv.isInitialized) return null;
-    final key = dotenv.env['DEEPSEEK_API_KEY'];
-    if (key == null) return null;
-    final trimmed = key.trim();
-    if (trimmed.isEmpty || trimmed == 'your_deepseek_api_key_here') return null;
-    return trimmed;
+    final url = dotenv.env['AI_PROXY_URL']?.trim();
+    if (url == null || url.isEmpty) return null;
+    return url.endsWith('/') ? url.substring(0, url.length - 1) : url;
   }
 
-  String get _model {
-    final m = dotenv.isInitialized ? dotenv.env['DEEPSEEK_MODEL']?.trim() : null;
-    return (m == null || m.isEmpty) ? _defaultModel : m;
+  /// Shared client key sent as `x-app-key`. Optional (the proxy may run open in
+  /// local dev), so a null/blank value simply omits the header.
+  String? get _appKey {
+    if (!dotenv.isInitialized) return null;
+    final key = dotenv.env['AI_APP_KEY']?.trim();
+    return (key == null || key.isEmpty) ? null : key;
   }
 
-  bool get isConfigured => _apiKey != null;
+  bool get isConfigured => _baseUrl != null;
 
   Future<String> chat({
     required String userMessage,
     String? systemMessage,
   }) async {
-    final apiKey = _apiKey;
-    if (apiKey == null) {
+    final baseUrl = _baseUrl;
+    if (baseUrl == null) {
       throw const AiUnconfiguredException();
     }
 
-    final messages = <Map<String, String>>[
-      if (systemMessage != null && systemMessage.isNotEmpty)
-        {'role': 'system', 'content': systemMessage},
-      {'role': 'user', 'content': userMessage},
-    ];
-
+    final appKey = _appKey;
     late final http.Response response;
     try {
       response = await http
           .post(
-            Uri.parse('$_baseUrl/chat/completions'),
+            Uri.parse('$baseUrl$_chatPath'),
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $apiKey',
+              if (appKey != null) 'x-app-key': appKey,
             },
             body: jsonEncode({
-              'model': _model,
-              'messages': messages,
-              'stream': false,
+              'userMessage': userMessage,
+              if (systemMessage != null && systemMessage.isNotEmpty)
+                'systemMessage': systemMessage,
             }),
           )
           .timeout(_timeout);
@@ -74,8 +70,11 @@ class DeepSeekService {
       throw Exception('Could not reach the AI service. Check your connection.');
     }
 
-    if (response.statusCode == 401) {
-      throw Exception('AI request rejected: invalid API key.');
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      throw Exception('AI request was not authorized.');
+    }
+    if (response.statusCode == 429) {
+      throw Exception('Too many AI requests. Please wait a moment and try again.');
     }
     if (response.statusCode != 200) {
       throw Exception('AI service error (${response.statusCode}).');
@@ -83,17 +82,12 @@ class DeepSeekService {
 
     final data =
         jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-    final choices = data['choices'] as List<dynamic>?;
-    String? content;
-    if (choices != null && choices.isNotEmpty) {
-      final message = choices.first['message'];
-      if (message is Map) content = message['content'] as String?;
-    }
+    final content = data['content'] as String?;
     if (content == null || content.trim().isEmpty) {
       throw Exception('The AI returned an empty response.');
     }
 
-    debugPrint('DeepSeek response received (${content.length} chars)');
+    debugPrint('AI proxy response received (${content.length} chars)');
     return content.trim();
   }
 }
@@ -102,5 +96,5 @@ class AiUnconfiguredException implements Exception {
   const AiUnconfiguredException();
   @override
   String toString() =>
-      'AI is not configured. Add a DEEPSEEK_API_KEY to enable it.';
+      'AI is not configured. Set AI_PROXY_URL to enable it.';
 }
