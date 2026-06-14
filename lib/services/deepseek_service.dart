@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 
@@ -57,7 +56,7 @@ class DeepSeekService {
             uri,
             headers: {
               'Content-Type': 'application/json',
-              if (appKey != null) 'x-app-key': appKey,
+              'x-app-key': ?appKey,
             },
             body: jsonEncode({
               'userMessage': userMessage,

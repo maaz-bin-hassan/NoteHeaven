@@ -307,7 +307,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
       _insertAtCursor(result);
       setState(() => _isEdited = true);
     } on AiUnconfiguredException {
-      _showMessage('AI is disabled — no API key configured');
+      _showMessage('AI is disabled — set AI_PROXY_URL to enable it');
     } catch (e) {
       _showMessage(e.toString().replaceFirst('Exception: ', ''));
     } finally {
